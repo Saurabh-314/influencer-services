@@ -3,10 +3,9 @@ const path = require('path');
 const { sequelize } = require('./models');
 require('dotenv').config();
 
-// Initialize Workers
-require('./jobs/sync.worker');
 
 // Plugins
+
 fastify.register(require('@fastify/helmet'));
 fastify.register(require('@fastify/cors'));
 fastify.register(require('@fastify/formbody'));
