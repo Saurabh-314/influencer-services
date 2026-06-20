@@ -7,7 +7,6 @@ require('dotenv').config();
 // Plugins
 
 fastify.register(require('@fastify/helmet'));
-fastify.register(require('@fastify/cors'));
 fastify.register(require('@fastify/formbody'));
 fastify.register(require('@fastify/static'), {
     root: path.join(__dirname, 'uploads'),
