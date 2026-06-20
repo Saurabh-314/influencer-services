@@ -14,6 +14,16 @@ fastify.register(require('@fastify/static'), {
     prefix: '/uploads/',
 });
 
+fastify.register(require('@fastify/cors'), {
+    origin: [
+        'https://influencer-front-cyan.vercel.app',
+        'http://localhost:5173', // Vite default local port
+        'http://localhost:3000'  // Alternative common local port
+    ],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    credentials: true
+});
+
 // Express Compatibility Hook
 fastify.addHook('onRequest', (request, reply, done) => {
     reply.json = (data) => reply.send(data);
@@ -45,10 +55,6 @@ const PORT = process.env.PORT || 5000;
 
 const start = async () => {
     try {
-        // await sequelize.authenticate();
-        // console.log('Database connected successfully.');
-        // await sequelize.sync({ alter: false });
-        // console.log('Database synced successfully.');
 
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
         console.log(`Server is running on port ${PORT}`);
