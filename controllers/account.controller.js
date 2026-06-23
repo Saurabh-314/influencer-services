@@ -74,6 +74,11 @@ exports.connectInstagram = async (request, reply) => {
 };
 
 exports.instagramCallback = async (request, reply) => {
+    console.log("instagramCallback app id", process.env.FACEBOOK_APP_ID);
+    console.log("instagramCallback app secret", process.env.FACEBOOK_APP_SECRET);
+    console.log("instagramCallback redirect uri", process.env.FACEBOOK_REDIRECT_URI);
+    console.log("instagramCallback client url", process.env.CLIENT_URL);
+
     const { code, state: userId } = request.query;
 
     if (!code) {
