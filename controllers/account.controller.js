@@ -70,6 +70,14 @@ exports.connectInstagram = async (request, reply) => {
 
     const url = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}&response_type=code`;
 
+    // const url =
+    //     `https://www.facebook.com/v18.0/dialog/oauth` +
+    //     `?client_id=${appId}` +
+    //     `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+    //     `&scope=${encodeURIComponent(scope)}` +
+    //     `&state=${state}` +
+    //     `&response_type=code`;
+
     reply.send({ url });
 };
 
@@ -102,6 +110,8 @@ exports.instagramCallback = async (request, reply) => {
         const pagesRes = await axios.get(`https://graph.facebook.com/v18.0/me/accounts`, {
             params: { access_token: userAccessToken }
         });
+
+        console.log("pagesRes", pagesRes);
         const pagesList = pagesRes.data.data;
 
         // 3. Find Page with linked Instagram Business Account
