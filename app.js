@@ -3,7 +3,6 @@ const path = require('path');
 const { sequelize } = require('./models');
 require('dotenv').config();
 
-
 // Plugins
 
 fastify.register(require('@fastify/helmet'));
