@@ -4,7 +4,6 @@ const { sequelize } = require('./models');
 require('dotenv').config();
 
 // Plugins
-
 fastify.register(require('@fastify/helmet'));
 fastify.register(require('@fastify/formbody'));
 fastify.register(require('@fastify/static'), {
