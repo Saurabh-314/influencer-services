@@ -117,7 +117,9 @@ exports.instagramCallback = async (request, reply) => {
         // 3. Find Page with linked Instagram Business Account
         let igAccountData = null;
         for (const page of pagesList) {
+            console.log("page", page);
             const pageInfo = await axios.get(`https://graph.facebook.com/v18.0/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`);
+            console.log("pageInfo", pageInfo);
             if (pageInfo.data.instagram_business_account) {
                 igAccountData = {
                     id: pageInfo.data.instagram_business_account.id,
@@ -133,9 +135,11 @@ exports.instagramCallback = async (request, reply) => {
 
         // 4. Get Instagram Profile details
         const profile = await instagramService.getProfile(igAccountData.id, igAccountData.page_token);
+        console.log("profile", profile);
 
         // 5. Get recent media for initial engagement calculation
         const media = await instagramService.getMedia(igAccountData.id, igAccountData.page_token, 5);
+        console.log("media", media);
 
         const avgEngagement = media.length > 0
             ? media.reduce((acc, m) => acc + (m.like_count + m.comments_count), 0) / media.length
@@ -149,7 +153,7 @@ exports.instagramCallback = async (request, reply) => {
                 account_id: profile.id,
                 username: profile.username,
                 display_name: profile.name,
-                profile_image: profile.profile_picture_url,
+                // profile_image: profile.profile_picture_url,
                 followers_count: profile.followers_count,
                 following_count: profile.follows_count,
                 total_posts: profile.media_count,
@@ -166,7 +170,7 @@ exports.instagramCallback = async (request, reply) => {
                 account_id: profile.id,
                 username: profile.username,
                 display_name: profile.name,
-                profile_image: profile.profile_picture_url,
+                // profile_image: profile.profile_picture_url,
                 followers_count: profile.followers_count,
                 following_count: profile.follows_count,
                 total_posts: profile.media_count,
