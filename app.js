@@ -13,11 +13,7 @@ fastify.register(require('@fastify/static'), {
 
 fastify.register(require('@fastify/cors'), {
     origin: [
-        'https://influencer-front-cyan.vercel.app',
-        'https://influencer-front-4rd2rm6bd-saurabh-s-projects-c13b925a.vercel.app',
-        'https://influencer-front-git-master-saurabh-s-projects-c13b925a.vercel.app',
-        'https://influencer-front-cyan.vercel.app',
-        'https://palevioletred-gazelle-977251.hostingersite.com',
+        'https://app.melotap.com',
         'http://localhost:5173', // Vite default local port
         'http://localhost:3000'  // Alternative common local port
     ],
