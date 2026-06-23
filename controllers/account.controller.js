@@ -65,7 +65,7 @@ exports.connectAccount = async (request, reply) => {
 exports.connectInstagram = async (request, reply) => {
     const appId = process.env.FACEBOOK_APP_ID;
     const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
-    const scope = 'pages_show_list,instagram_basic,instagram_manage_insights,pages_read_engagement,public_profile';
+    const scope = 'pages_show_list,instagram_basic,instagram_manage_insights,pages_read_engagement,public_profile,business_management';
     const state = request.user.id;
 
     const url = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}&response_type=code`;
