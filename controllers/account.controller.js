@@ -211,7 +211,7 @@ exports.syncAccountData = async (request, reply) => {
 
         await account.update({
             display_name: profile.name,
-            profile_image: profile.profile_picture_url,
+            // profile_image: profile.profile_picture_url,
             followers_count: profile.followers_count,
             following_count: profile.follows_count,
             total_posts: profile.media_count,
