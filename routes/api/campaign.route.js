@@ -4,7 +4,7 @@ const { authenticateUser, authorizeRoles } = require('../../middleware/auth.midd
 async function campaignRoutes(fastify) {
     fastify.get('/', { preHandler: [authenticateUser] }, campaignController.getAllCampaigns);
     fastify.get('/:id', { preHandler: [authenticateUser] }, campaignController.getCampaignById);
-    fastify.post('/', { preHandler: [authenticateUser, authorizeRoles('admin')] }, campaignController.createCampaign);
+    fastify.post('/', { preHandler: [authenticateUser, authorizeRoles('brand')] }, campaignController.createCampaign);
 }
 
 module.exports = campaignRoutes;
