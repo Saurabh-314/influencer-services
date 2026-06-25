@@ -1,31 +1,32 @@
-const { CampaignSubmission, CreatorPoints, User, Campaign } = require('../models');
+const db = require('../models');
+const campaign_submissions = db.models.campaign_submissions;
+const creator_points = db.models.creator_points;
 
 exports.submitCampaign = async (request, reply) => {
     try {
         const { campaign_id, social_account_id, submission_url, proof_image } = request.body;
 
-        // Check if duplicate submission
-        const existingSubmission = await CampaignSubmission.findOne({
-            where: { campaign_id, user_id: request.user.id, social_account_id }
+        const existingSubmission = await campaign_submissions.findOne({
+            where: { campaign_id, user_id: request.user.id, social_account_id },
         });
 
         if (existingSubmission) {
             return reply.status(400).send({ success: false, message: 'You have already submitted for this campaign using this account' });
         }
 
-        const submission = await CampaignSubmission.create({
+        const submission = await campaign_submissions.create({
             campaign_id,
             user_id: request.user.id,
             social_account_id,
             submission_url,
             proof_image,
-            status: 'pending'
+            status: 'pending',
         });
 
         reply.status(201).send({
             success: true,
             message: 'Submission received and pending approval',
-            data: submission
+            data: submission,
         });
     } catch (error) {
         reply.status(500).send({ success: false, message: error.message });
@@ -33,10 +34,10 @@ exports.submitCampaign = async (request, reply) => {
 };
 
 exports.approveSubmission = async (request, reply) => {
-    const transaction = await CampaignSubmission.sequelize.transaction();
+    const transaction = await db.sequelize.transaction();
     try {
         const { id } = request.params;
-        const submission = await CampaignSubmission.findByPk(id, { include: [Campaign] });
+        const submission = await campaign_submissions.findByPk(id, { include: ['campaign'] });
 
         if (!submission) {
             return reply.status(404).send({ success: false, message: 'Submission not found' });
@@ -46,30 +47,27 @@ exports.approveSubmission = async (request, reply) => {
             return reply.status(400).send({ success: false, message: 'Submission already processed' });
         }
 
-        // Update submission status
         await submission.update({
             status: 'approved',
             approved_by: request.user.id,
-            approved_at: new Date()
+            approved_at: new Date(),
         }, { transaction });
 
-        // Award points
-        await CreatorPoints.create({
+        await creator_points.create({
             user_id: submission.user_id,
-            points: submission.Campaign.reward_points,
-            reason: `Reward for campaign: ${submission.Campaign.title}`,
-            campaign_id: submission.campaign_id
+            points: submission.campaign.reward_points,
+            reason: `Reward for campaign: ${submission.campaign.title}`,
+            campaign_id: submission.campaign_id,
         }, { transaction });
 
         await transaction.commit();
 
         reply.send({
             success: true,
-            message: 'Submission approved and points awarded'
+            message: 'Submission approved and points awarded',
         });
     } catch (error) {
         await transaction.rollback();
         reply.status(500).send({ success: false, message: error.message });
     }
 };
-

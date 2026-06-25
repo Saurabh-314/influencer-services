@@ -1,4 +1,5 @@
-const { User } = require('../models');
+const db = require('../models');
+const users = db.models.users;
 const jwt = require('jsonwebtoken');
 
 const generateTokens = (user) => {
@@ -21,16 +22,16 @@ exports.register = async (request, reply) => {
     try {
         const { name, email, password, role } = request.body;
 
-        const existingUser = await User.findOne({ where: { email } });
+        const existingUser = await users.findOne({ where: { email } });
         if (existingUser) {
             return reply.status(400).send({ success: false, message: 'Email already exists' });
         }
 
-        const user = await User.create({
+        const user = await users.create({
             name,
             email,
             password,
-            role: role || 'creator'
+            role: role || 'creator',
         });
 
         const { accessToken, refreshToken } = generateTokens(user);
@@ -43,11 +44,11 @@ exports.register = async (request, reply) => {
                     id: user.id,
                     name: user.name,
                     email: user.email,
-                    role: user.role
+                    role: user.role,
                 },
                 accessToken,
-                refreshToken
-            }
+                refreshToken,
+            },
         });
     } catch (error) {
         reply.status(500).send({ success: false, message: error.message });
@@ -58,7 +59,7 @@ exports.login = async (request, reply) => {
     try {
         const { email, password } = request.body;
 
-        const user = await User.findOne({ where: { email } });
+        const user = await users.findOne({ where: { email } });
         if (!user || !(await user.comparePassword(password))) {
             return reply.status(401).send({ success: false, message: 'Invalid credentials' });
         }
@@ -77,13 +78,14 @@ exports.login = async (request, reply) => {
                     id: user.id,
                     name: user.name,
                     email: user.email,
-                    role: user.role
+                    role: user.role,
                 },
                 accessToken,
-                refreshToken
-            }
+                refreshToken,
+            },
         });
     } catch (error) {
+        console.log(error);
         reply.status(500).send({ success: false, message: error.message });
     }
 };
@@ -96,7 +98,7 @@ exports.refreshToken = async (request, reply) => {
         }
 
         const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-        const user = await User.findByPk(decoded.id);
+        const user = await users.findByPk(decoded.id);
 
         if (!user || user.status !== 'active') {
             return reply.status(401).send({ success: false, message: 'Invalid token' });
@@ -106,10 +108,9 @@ exports.refreshToken = async (request, reply) => {
 
         reply.send({
             success: true,
-            data: tokens
+            data: tokens,
         });
     } catch (error) {
         reply.status(401).send({ success: false, message: 'Invalid refresh token' });
     }
 };
-

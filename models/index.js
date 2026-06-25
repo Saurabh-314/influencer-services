@@ -1,51 +1,72 @@
-const sequelize = require('../config/database');
-const User = require('./User');
-const SocialAccount = require('./SocialAccount');
-const Campaign = require('./Campaign');
-const CampaignAsset = require('./CampaignAsset');
-const CampaignCaption = require('./CampaignCaption');
-const CampaignSubmission = require('./CampaignSubmission');
-const CreatorPoints = require('./CreatorPoints');
-const CreatorRank = require('./CreatorRank');
-const Notification = require('./Notification');
+const fs = require('fs');
+const path = require('path');
+const Sequelize = require('sequelize');
+const basename = path.basename(__filename);
 
-// Associations
-User.hasMany(SocialAccount, { foreignKey: 'user_id', as: 'socialAccounts' });
-SocialAccount.belongsTo(User, { foreignKey: 'user_id' });
+const dbConfig = require("../config/database.config");
+const db = { models: {} }
 
-User.hasMany(CampaignSubmission, { foreignKey: 'user_id', as: 'submissions' });
-CampaignSubmission.belongsTo(User, { foreignKey: 'user_id' });
+const sequelize = new Sequelize(dbConfig.DB, dbConfig.USER, dbConfig.PASSWORD, {
+	host: dbConfig.HOST,
+	dialect: dbConfig.dialect,
+	operatorsAliases: 0,
+	logging: false,
+	define: {
+		underscored: false,
+		freezeTableName: true, //use singular table name
+		timestamps: true // I do not want timestamp fields by default
+	},
+	timezone: "+05:30",
+	dialectOptions: {
+		// for reading from database
+		dateStrings: true,
+		timezone: "+05:30",
+		typeCast: true
+	},
+	retry: {
+		match: [
+			/SequelizeConnectionError/,
+			/SequelizeConnectionRefusedError/,
+			/SequelizeHostNotFoundError/,
+			/SequelizeHostNotReachableError/,
+			/SequelizeInvalidConnectionError/,
+			/SequelizeConnectionTimedOutError/,
+			/SequelizeConnectionAcquireTimeoutError/,
+		],
+		backoffBase: 1000,
+		backoffExponent: 1.1,
+		timeout: 60000,
+	},
+	pool: {
+		max: dbConfig.pool.max,
+		min: dbConfig.pool.min,
+		acquire: dbConfig.pool.acquire,
+		idle: dbConfig.pool.idle
+	}
+});
 
-User.hasMany(CreatorPoints, { foreignKey: 'user_id', as: 'pointHistory' });
-CreatorPoints.belongsTo(User, { foreignKey: 'user_id' });
+fs
+	.readdirSync(__dirname)
+	.filter(file => {
+		return (
+			file.indexOf('.') !== 0 &&
+			file !== basename &&
+			file.slice(-3) === '.js' &&
+			file.indexOf('.test.js') === -1
+		);
+	})
+	.forEach(file => {
+		const model = require(path.join(__dirname, file))(sequelize, Sequelize.DataTypes);
+		db.models[model.name] = model;
+	});
 
-User.hasOne(CreatorRank, { foreignKey: 'user_id', as: 'rank' });
-CreatorRank.belongsTo(User, { foreignKey: 'user_id' });
+Object.keys(db.models).forEach(modelName => {
 
-Campaign.hasMany(CampaignAsset, { foreignKey: 'campaign_id', as: 'assets' });
-CampaignAsset.belongsTo(Campaign, { foreignKey: 'campaign_id' });
+	if (db.models[modelName].associate) {
+		db.models[modelName].associate(db.models);
+	}
+});
 
-Campaign.hasMany(CampaignCaption, { foreignKey: 'campaign_id', as: 'captions' });
-CampaignCaption.belongsTo(Campaign, { foreignKey: 'campaign_id' });
-
-Campaign.hasMany(CampaignSubmission, { foreignKey: 'campaign_id', as: 'submissions' });
-CampaignSubmission.belongsTo(Campaign, { foreignKey: 'campaign_id' });
-
-CampaignSubmission.belongsTo(SocialAccount, { foreignKey: 'social_account_id', as: 'socialAccount' });
-SocialAccount.hasMany(CampaignSubmission, { foreignKey: 'social_account_id', as: 'submissions' });
-
-User.hasMany(Notification, { foreignKey: 'user_id', as: 'notifications' });
-Notification.belongsTo(User, { foreignKey: 'user_id' });
-
-module.exports = {
-    sequelize,
-    User,
-    SocialAccount,
-    Campaign,
-    CampaignAsset,
-    CampaignCaption,
-    CampaignSubmission,
-    CreatorPoints,
-    CreatorRank,
-    Notification
-};
+db.Sequelize = Sequelize;
+db.sequelize = sequelize;
+module.exports = db;

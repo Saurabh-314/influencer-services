@@ -1,8 +1,11 @@
-const { User, CreatorRank, CreatorPoints, sequelize } = require('../models');
+const db = require('../models');
+const users = db.models.users;
+const creator_ranks = db.models.creator_ranks;
+const { sequelize } = db;
 
 exports.getLeaderboard = async (request, reply) => {
     try {
-        const leaderboard = await User.findAll({
+        const leaderboard = await users.findAll({
             where: { role: 'creator' },
             attributes: [
                 'id', 'name', 'profile_image',
@@ -10,29 +13,28 @@ exports.getLeaderboard = async (request, reply) => {
                     sequelize.literal(`(
                         SELECT COALESCE(SUM(points), 0)
                         FROM creator_points
-                        WHERE creator_points.user_id = User.id
+                        WHERE creator_points.user_id = users.id
                     )`),
-                    'total_points'
-                ]
+                    'total_points',
+                ],
             ],
             include: [
                 {
-                    model: CreatorRank,
+                    model: creator_ranks,
                     as: 'rank',
-                    attributes: ['level', 'rank_score']
-                }
+                    attributes: ['level', 'rank_score'],
+                },
             ],
             order: [[sequelize.literal('total_points'), 'DESC']],
-            limit: 100
+            limit: 100,
         });
 
         reply.send({
             success: true,
-            data: leaderboard
+            data: leaderboard,
         });
     } catch (error) {
         console.log(error);
         reply.status(500).send({ success: false, message: error.message });
     }
 };
-

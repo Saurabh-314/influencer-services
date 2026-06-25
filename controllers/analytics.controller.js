@@ -1,13 +1,14 @@
-const { CampaignSubmission, CreatorPoints, sequelize } = require('../models');
+const db = require('../models');
+const campaign_submissions = db.models.campaign_submissions;
+const creator_points = db.models.creator_points;
 
 exports.getStats = async (request, reply) => {
     try {
-        const totalPoints = await CreatorPoints.sum('points', { where: { user_id: request.user.id } }) || 0;
-        const completedCampaigns = await CampaignSubmission.count({
-            where: { user_id: request.user.id, status: 'approved' }
+        const totalPoints = await creator_points.sum('points', { where: { user_id: request.user.id } }) || 0;
+        const completedCampaigns = await campaign_submissions.count({
+            where: { user_id: request.user.id, status: 'approved' },
         });
 
-        // Mock growth data for charts
         const growthData = [
             { name: 'Jan', points: 400 },
             { name: 'Feb', points: 300 },
@@ -22,11 +23,10 @@ exports.getStats = async (request, reply) => {
             data: {
                 totalPoints,
                 completedCampaigns,
-                growthData
-            }
+                growthData,
+            },
         });
     } catch (error) {
         reply.status(500).send({ success: false, message: error.message });
     }
 };
-

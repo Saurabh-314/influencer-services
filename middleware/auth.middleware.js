@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
-const { User } = require('../models');
+const db = require('../models');
+const users = db.models.users;
 
 const authenticateUser = async (request, reply) => {
     try {
@@ -11,7 +12,7 @@ const authenticateUser = async (request, reply) => {
         const token = authHeader.split(' ')[1];
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-        const user = await User.findByPk(decoded.id);
+        const user = await users.findByPk(decoded.id);
         if (!user) {
             return reply.status(401).send({ success: false, message: 'Invalid token' });
         }
@@ -31,14 +32,13 @@ const authorizeRoles = (...roles) => {
         if (!roles.includes(request.user.role)) {
             return reply.status(403).send({
                 success: false,
-                message: `Role (${request.user.role}) is not allowed to access this resource`
+                message: `Role (${request.user.role}) is not allowed to access this resource`,
             });
         }
     };
 };
 
-
 module.exports = {
     authenticateUser,
-    authorizeRoles
+    authorizeRoles,
 };

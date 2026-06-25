@@ -1,10 +1,11 @@
 {
   "name": "server",
   "version": "1.0.0",
-  "main": "app.js",
+  "main": "index.js",
   "scripts": {
-    "start": "nodemon app.js",
-    "migrate": "sequelize-cli db:migrate"
+    "start": "nodemon index.js",
+    "migrate": "sequelize-cli db:migrate",
+    "seed": "npx sequelize-cli db:seed:all"
   },
   "keywords": [],
   "author": "",
@@ -21,7 +22,8 @@
     "fastify": "^5.8.5",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.11.5",
-    "sequelize": "^6.37.5"
+    "sequelize": "^6.37.5",
+    "sequelize-cli": "^6.6.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"

@@ -1,5 +1,6 @@
 const axios = require('axios');
-const { SocialAccount } = require('../models');
+const db = require('../models');
+const social_accounts = db.models.social_accounts;
 const { calculateInfluencerScore, calculateAdvStats } = require('../utils/scoring');
 
 const instagramService = require('../services/instagram.service');
@@ -8,7 +9,7 @@ exports.getConnectedAccounts = async (request, reply) => {
 
 
     try {
-        const accounts = await SocialAccount.findAll({
+        const accounts = await social_accounts.findAll({
             where: { user_id: request.user.id }
         });
 
@@ -24,7 +25,7 @@ exports.getConnectedAccounts = async (request, reply) => {
 exports.getAccountDetail = async (request, reply) => {
     try {
         const { id } = request.params;
-        const account = await SocialAccount.findOne({
+        const account = await social_accounts.findOne({
             where: { id, user_id: request.user.id }
         });
 
@@ -44,7 +45,7 @@ exports.connectAccount = async (request, reply) => {
     try {
         const { platform, username } = request.body;
 
-        const account = await SocialAccount.create({
+        const account = await social_accounts.create({
             user_id: request.user.id,
             platform,
             username,
@@ -62,11 +63,16 @@ exports.connectAccount = async (request, reply) => {
     }
 };
 
+function getOAuthRedirectPath(returnTo) {
+    return returnTo === 'creator' ? '/creator/dashboard' : '/accounts';
+}
+
 exports.connectInstagram = async (request, reply) => {
     const appId = process.env.FACEBOOK_APP_ID;
     const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
     const scope = 'pages_show_list,instagram_basic,instagram_manage_insights,pages_read_engagement,public_profile,business_management';
-    const state = request.user.id;
+    const returnTo = request.query.returnTo || 'accounts';
+    const state = `${request.user.id}|${returnTo}`;
 
     const url = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}&response_type=code`;
 
@@ -87,10 +93,12 @@ exports.instagramCallback = async (request, reply) => {
     console.log("instagramCallback redirect uri", process.env.FACEBOOK_REDIRECT_URI);
     console.log("instagramCallback client url", process.env.CLIENT_URL);
 
-    const { code, state: userId } = request.query;
+    const { code, state } = request.query;
+    const [userId, returnTo = 'accounts'] = (state || '').split('|');
+    const redirectPath = getOAuthRedirectPath(returnTo);
 
     if (!code) {
-        return reply.redirect(`${process.env.CLIENT_URL}/accounts?error=access_denied`);
+        return reply.redirect(`${process.env.CLIENT_URL}${redirectPath}?error=access_denied`);
     }
 
     try {
@@ -130,7 +138,7 @@ exports.instagramCallback = async (request, reply) => {
         }
 
         if (!igAccountData) {
-            return reply.redirect(`${process.env.CLIENT_URL}/accounts?error=no_ig_business_account_found`);
+            return reply.redirect(`${process.env.CLIENT_URL}${redirectPath}?error=no_ig_business_account_found`);
         }
 
         // 4. Get Instagram Profile details
@@ -146,8 +154,8 @@ exports.instagramCallback = async (request, reply) => {
             : 0;
         const engagementRate = profile.followers_count > 0 ? (avgEngagement / profile.followers_count) * 100 : 0;
 
-        // 6. Save or update SocialAccount
-        const [account, created] = await SocialAccount.findOrCreate({
+        // 6. Save or update social_accounts
+        const [account, created] = await social_accounts.findOrCreate({
             where: { user_id: userId, platform: 'instagram' },
             defaults: {
                 account_id: profile.id,
@@ -182,17 +190,17 @@ exports.instagramCallback = async (request, reply) => {
             });
         }
 
-        reply.redirect(`${process.env.CLIENT_URL}/accounts?success=connected`);
+        reply.redirect(`${process.env.CLIENT_URL}${redirectPath}?success=connected`);
     } catch (error) {
         console.error('FB/IG OAuth Error:', error.response?.data || error.message);
-        reply.redirect(`${process.env.CLIENT_URL}/accounts?error=oauth_failed`);
+        reply.redirect(`${process.env.CLIENT_URL}${redirectPath}?error=oauth_failed`);
     }
 };
 
 exports.syncAccountData = async (request, reply) => {
     const { id } = request.params;
     try {
-        const account = await SocialAccount.findOne({
+        const account = await social_accounts.findOne({
             where: { id, user_id: request.user.id }
         });
 
