@@ -40,7 +40,25 @@ function calculateAdvStats(media) {
     };
 }
 
+function getVusicRank(followers) {
+    if (followers >= 1_000_000) return 1;
+    if (followers >= 100_000) return 2;
+    if (followers >= 10_000) return 3;
+    return 4;
+}
+
+function getPayoutForRank(campaign, userRank) {
+    if (!campaign?.rank_allocations) return 0;
+    const allocations = typeof campaign.rank_allocations === 'string'
+        ? JSON.parse(campaign.rank_allocations)
+        : campaign.rank_allocations;
+    const allocation = allocations.find((r) => r.rank === userRank);
+    return Number(allocation?.payout ?? 0);
+}
+
 module.exports = {
     calculateInfluencerScore,
-    calculateAdvStats
+    calculateAdvStats,
+    getVusicRank,
+    getPayoutForRank,
 };

@@ -1,6 +1,28 @@
 const db = require('../models');
 const campaign_submissions = db.models.campaign_submissions;
 const creator_points = db.models.creator_points;
+const campaigns = db.models.campaigns;
+
+exports.getMySubmissions = async (request, reply) => {
+    try {
+        const submissions = await campaign_submissions.findAll({
+            where: { user_id: request.user.id },
+            include: [{
+                model: campaigns,
+                as: 'campaign',
+                attributes: ['id', 'title', 'brand_name', 'genre', 'rank_allocations', 'reward_points'],
+            }],
+            order: [['createdAt', 'DESC']],
+        });
+
+        reply.send({
+            success: true,
+            data: submissions,
+        });
+    } catch (error) {
+        reply.status(500).send({ success: false, message: error.message });
+    }
+};
 
 exports.submitCampaign = async (request, reply) => {
     try {
