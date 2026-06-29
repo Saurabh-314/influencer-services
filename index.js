@@ -2,9 +2,18 @@ require('dotenv').config();
 
 const fastify = require('fastify')({ logger: true });
 const path = require('path');
+const { startPayoutReleaseJob } = require('./jobs/releasePayouts');
 
-fastify.register(require('@fastify/helmet'));
+fastify.register(require('@fastify/helmet'), {
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+});
 fastify.register(require('@fastify/formbody'));
+fastify.register(require('@fastify/multipart'), {
+    limits: {
+        fileSize: 5 * 1024 * 1024,
+        files: 1,
+    },
+});
 fastify.register(require('@fastify/static'), {
     root: path.join(__dirname, 'uploads'),
     prefix: '/uploads/',
@@ -45,6 +54,7 @@ const start = async () => {
     try {
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
         console.log(`Server is running on port ${PORT}`);
+        startPayoutReleaseJob(fastify.log);
     } catch (err) {
         fastify.log.error(err);
         process.exit(1);

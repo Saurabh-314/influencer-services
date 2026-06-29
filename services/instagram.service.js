@@ -28,7 +28,7 @@ class InstagramService {
         try {
             const res = await axios.get(`${this.baseUrl}/${igAccountId}/insights`, {
                 params: {
-                    metric: 'impressions,reach,profile_views',
+                    metric: 'reach',
                     period: 'day',
                     access_token: accessToken
                 }

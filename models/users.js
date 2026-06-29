@@ -25,6 +25,10 @@ module.exports = (sequelize, DataTypes) => {
                 foreignKey: 'user_id',
                 as: 'points',
             });
+            users.hasOne(models.wallets, {
+                foreignKey: 'user_id',
+                as: 'wallet',
+            });
         }
 
         async comparePassword(password) {

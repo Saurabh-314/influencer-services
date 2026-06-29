@@ -20,6 +20,10 @@ module.exports = (sequelize, DataTypes) => {
                 foreignKey: 'approved_by',
                 as: 'approver',
             });
+            campaign_submissions.hasOne(models.payout_schedules, {
+                foreignKey: 'submission_id',
+                as: 'payout_schedule',
+            });
         }
     }
 
@@ -44,6 +48,7 @@ module.exports = (sequelize, DataTypes) => {
         },
         approved_by: { type: DataTypes.INTEGER, allowNull: true },
         approved_at: { type: DataTypes.DATE, allowNull: true },
+        payout_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
         createdAt: { type: DataTypes.DATE, field: 'created_at' },
         updatedAt: { type: DataTypes.DATE, field: 'updated_at' },
     }, {

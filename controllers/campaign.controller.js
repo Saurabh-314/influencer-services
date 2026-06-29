@@ -2,8 +2,11 @@ const db = require('../models');
 const campaigns = db.models.campaigns;
 const campaign_assets = db.models.campaign_assets;
 const campaign_captions = db.models.campaign_captions;
+const { lockCampaignBudget, toNumber } = require('../services/wallet.service');
+const { calculateCampaignLiability } = require('../utils/campaignBudget');
 
 exports.createCampaign = async (request, reply) => {
+    const transaction = await db.sequelize.transaction();
     try {
         const {
             title,
@@ -32,6 +35,22 @@ exports.createCampaign = async (request, reply) => {
             captions,
         } = request.body;
 
+        const liability = calculateCampaignLiability(rank_allocations, bonus_reward, bonus_max_creators);
+        const budget = toNumber(total_budget);
+
+        if (budget <= 0) {
+            await transaction.rollback();
+            return reply.status(400).send({ success: false, message: 'Campaign budget must be greater than zero' });
+        }
+
+        if (budget < liability) {
+            await transaction.rollback();
+            return reply.status(400).send({
+                success: false,
+                message: `Campaign budget (₹${budget}) is less than total liability (₹${liability}). Increase budget or reduce allocations.`,
+            });
+        }
+
         const campaign = await campaigns.create({
             title,
             description,
@@ -53,21 +72,26 @@ exports.createCampaign = async (request, reply) => {
             audience_age,
             specific_creators,
             rank_allocations,
-            total_budget,
+            total_budget: budget,
+            spent_budget: 0,
             expected_reels,
             created_by: request.user.id,
             status: 'active',
-        });
+        }, { transaction });
+
+        await lockCampaignBudget(request.user.id, campaign.id, budget, transaction);
 
         if (assets && assets.length > 0) {
             const assetData = assets.map((asset) => ({ ...asset, campaign_id: campaign.id }));
-            await campaign_assets.bulkCreate(assetData);
+            await campaign_assets.bulkCreate(assetData, { transaction });
         }
 
         if (captions && captions.length > 0) {
             const captionData = captions.map((caption) => ({ ...caption, campaign_id: campaign.id }));
-            await campaign_captions.bulkCreate(captionData);
+            await campaign_captions.bulkCreate(captionData, { transaction });
         }
+
+        await transaction.commit();
 
         const fullCampaign = await campaigns.findByPk(campaign.id, {
             include: ['assets', 'captions'],
@@ -75,19 +99,26 @@ exports.createCampaign = async (request, reply) => {
 
         reply.status(201).send({
             success: true,
-            message: 'Campaign created successfully',
+            message: 'Campaign created and budget locked from wallet',
             data: fullCampaign,
         });
     } catch (error) {
-        reply.status(500).send({ success: false, message: error.message });
+        await transaction.rollback();
+        reply.status(error.statusCode || 400).send({ success: false, message: error.message });
     }
 };
 
 exports.getAllCampaigns = async (request, reply) => {
     try {
+        const where = { status: 'active' };
+        if (request.user.role === 'brand') {
+            where.created_by = request.user.id;
+        }
+
         const campaignList = await campaigns.findAll({
-            where: { status: 'active' },
+            where,
             include: ['assets', 'captions'],
+            order: [['createdAt', 'DESC']],
         });
 
         reply.send({

@@ -24,6 +24,10 @@ module.exports = (sequelize, DataTypes) => {
                 foreignKey: 'campaign_id',
                 as: 'points',
             });
+            campaigns.hasMany(models.payout_schedules, {
+                foreignKey: 'campaign_id',
+                as: 'payouts',
+            });
         }
     }
 
@@ -55,6 +59,7 @@ module.exports = (sequelize, DataTypes) => {
         specific_creators: { type: DataTypes.TEXT, allowNull: true },
         rank_allocations: { type: DataTypes.JSON, allowNull: true },
         total_budget: { type: DataTypes.DECIMAL(10, 2), allowNull: true },
+        spent_budget: { type: DataTypes.DECIMAL(12, 2), allowNull: false, defaultValue: 0 },
         expected_reels: { type: DataTypes.INTEGER, allowNull: true },
         start_date: { type: DataTypes.DATE, allowNull: false },
         end_date: { type: DataTypes.DATE, allowNull: false },
