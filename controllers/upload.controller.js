@@ -25,6 +25,12 @@ exports.uploadCampaignImage = async (request, reply) => {
             data: result,
         });
     } catch (error) {
+        if (error.code === 'FST_REQ_FILE_TOO_LARGE') {
+            return reply.status(413).send({
+                success: false,
+                message: 'File is too large. Maximum upload size is 5MB.',
+            });
+        }
         reply.status(400).send({ success: false, message: error.message });
     }
 };

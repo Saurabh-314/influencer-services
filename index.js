@@ -1,6 +1,11 @@
 require('dotenv').config();
 
-const fastify = require('fastify')({ logger: true });
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+const fastify = require('fastify')({
+    logger: true,
+    bodyLimit: MAX_UPLOAD_BYTES + (512 * 1024),
+});
 const path = require('path');
 const { startPayoutReleaseJob } = require('./jobs/releasePayouts');
 
@@ -10,8 +15,11 @@ fastify.register(require('@fastify/helmet'), {
 fastify.register(require('@fastify/formbody'));
 fastify.register(require('@fastify/multipart'), {
     limits: {
-        fileSize: 5 * 1024 * 1024,
+        fileSize: MAX_UPLOAD_BYTES,
         files: 1,
+        fields: 10,
+        fieldSize: 1024,
+        parts: 11,
     },
 });
 fastify.register(require('@fastify/static'), {
@@ -42,6 +50,14 @@ fastify.get('/', async (request, reply) => {
 
 fastify.setErrorHandler((error, request, reply) => {
     fastify.log.error(error);
+
+    if (error.code === 'FST_REQ_FILE_TOO_LARGE' || error.statusCode === 413) {
+        return reply.status(413).send({
+            success: false,
+            message: 'File is too large. Maximum upload size is 5MB.',
+        });
+    }
+
     reply.status(error.statusCode || 500).send({
         success: false,
         message: error.message || 'Internal Server Error',
