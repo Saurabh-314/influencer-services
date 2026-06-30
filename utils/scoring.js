@@ -17,6 +17,34 @@ function calculateInfluencerScore(followers, engagementRate) {
     return Math.min(100, Math.round(baseScore + engagementBoost));
 }
 
+function getMediaViews(media) {
+    const viewsInsight = media.insights?.find(
+        (i) => i.name === 'views' || i.name === 'video_views' || i.name === 'plays',
+    );
+    if (viewsInsight?.values?.[0]?.value != null) {
+        return viewsInsight.values[0].value;
+    }
+    return (media.like_count || 0) * 10;
+}
+
+function computeReelsStats(media) {
+    const reels = media.filter(
+        (m) => m.media_product_type === 'REELS' || m.media_type === 'REELS' || m.media_type === 'VIDEO',
+    );
+    const stats = { total: reels.length, '>1k': 0, '>10k': 0, '>100k': 0, '>1m': 0, '>10m': 0 };
+
+    reels.forEach((item) => {
+        const views = getMediaViews(item);
+        if (views >= 10_000_000) stats['>10m']++;
+        else if (views >= 1_000_000) stats['>1m']++;
+        else if (views >= 100_000) stats['>100k']++;
+        else if (views >= 10_000) stats['>10k']++;
+        else if (views >= 1_000) stats['>1k']++;
+    });
+
+    return stats;
+}
+
 function calculateAdvStats(media) {
     if (!media || media.length === 0) return null;
 
@@ -61,4 +89,6 @@ module.exports = {
     calculateAdvStats,
     getVusicRank,
     getPayoutForRank,
+    getMediaViews,
+    computeReelsStats,
 };

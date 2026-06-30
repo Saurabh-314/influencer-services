@@ -4,6 +4,8 @@ const social_accounts = db.models.social_accounts;
 const {
     calculateInfluencerScore,
     calculateAdvStats,
+    computeReelsStats,
+    getMediaViews,
 } = require("../utils/scoring");
 
 const instagramService = require("../services/instagram.service");
@@ -159,7 +161,6 @@ exports.instagramCallback = async (request, reply) => {
         const media = await instagramService.getMedia(
             igAccountData.id,
             igAccountData.page_token,
-            5,
         );
 
         // get insights for the media
@@ -252,8 +253,21 @@ exports.syncAccountData = async (request, reply) => {
         const media = await instagramService.getMedia(
             account.account_id,
             account.access_token,
-            5,
         );
+
+        const reelsStats = computeReelsStats(media);
+        const topPosts = [...media]
+            .sort((a, b) => getMediaViews(b) - getMediaViews(a))
+            .slice(0, 8)
+            .map((m) => ({
+                id: m.id,
+                media_url: m.media_url,
+                permalink: m.permalink,
+                like_count: m.like_count,
+                comments_count: m.comments_count,
+                timestamp: m.timestamp,
+                views: getMediaViews(m),
+            }));
 
         // Recalculate engagement rate
         const avgEngagement =
@@ -282,8 +296,8 @@ exports.syncAccountData = async (request, reply) => {
             success: true,
             data: {
                 profile,
-                // insights,
-                media,
+                reels_stats: reelsStats,
+                top_posts: topPosts,
                 engagement_rate: account.engagement_rate,
                 influencer_score: calculateInfluencerScore(
                     profile.followers_count,
