@@ -307,6 +307,7 @@ exports.syncAccountData = async (request, reply) => {
             },
         });
     } catch (error) {
+        console.error("Sync Account Data Error:", error.response?.data || error.message);
         reply.status(500).send({ success: false, message: error.message });
     }
 };
