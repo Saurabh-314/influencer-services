@@ -1,6 +1,7 @@
 const axios = require('axios');
 
 const MEDIA_FIELDS = 'id,caption,media_type,media_product_type,media_url,permalink,timestamp,like_count,comments_count';
+const API_VERSION = 'v21.0';
 
 async function mapWithConcurrency(items, fn, concurrency = 5) {
     const results = [];
@@ -12,30 +13,149 @@ async function mapWithConcurrency(items, fn, concurrency = 5) {
     return results;
 }
 
-/**
- * Service to handle Instagram Graph API interactions
- */
-class InstagramService {
-    constructor() {
-        this.baseUrl = 'https://graph.facebook.com/v18.0';
+function normalizeRedirectUri(uri) {
+    if (!uri) return uri;
+
+    let normalized = uri.trim();
+    if (process.env.INSTAGRAM_REDIRECT_TRAILING_SLASH !== 'false' && !normalized.endsWith('/')) {
+        normalized += '/';
+    }
+    return normalized;
+}
+
+function getInstagramConfig() {
+    const appId = process.env.INSTAGRAM_APP_ID;
+    const appSecret = process.env.INSTAGRAM_APP_SECRET;
+    const redirectUri = normalizeRedirectUri(process.env.INSTAGRAM_REDIRECT_URI);
+
+    if (!appId || !appSecret || !redirectUri) {
+        throw new Error(
+            'Instagram OAuth is not configured. Set INSTAGRAM_APP_ID, INSTAGRAM_APP_SECRET, and INSTAGRAM_REDIRECT_URI.',
+        );
     }
 
-    /**
-     * Get Instagram Business Account Profile Data
-     */
-    async getProfile(igAccountId, accessToken) {
-        const res = await axios.get(`${this.baseUrl}/${igAccountId}`, {
+    return { appId, appSecret, redirectUri };
+}
+
+function parseTokenResponse(data) {
+    if (data?.data?.[0]) {
+        return {
+            accessToken: data.data[0].access_token,
+            userId: data.data[0].user_id,
+        };
+    }
+    return {
+        accessToken: data.access_token,
+        userId: data.user_id,
+    };
+}
+
+class InstagramService {
+    constructor() {
+        this.baseUrl = `https://graph.instagram.com/${API_VERSION}`;
+    }
+
+    getRedirectUri() {
+        return getInstagramConfig().redirectUri;
+    }
+
+    getOAuthUrl(state) {
+        const embedUrl = process.env.INSTAGRAM_EMBED_URL?.trim();
+        if (embedUrl) {
+            const url = new URL(embedUrl);
+            url.searchParams.set('state', state);
+            return url.toString();
+        }
+
+        const { appId, redirectUri } = getInstagramConfig();
+        const scope = 'instagram_business_basic,instagram_business_manage_insights';
+        const params = [
+            `client_id=${appId}`,
+            `redirect_uri=${encodeURIComponent(redirectUri)}`,
+            `scope=${scope}`,
+            `response_type=code`,
+            `state=${encodeURIComponent(state)}`,
+            `enable_fb_login=false`,
+        ].join('&');
+
+        return `https://www.instagram.com/oauth/authorize?${params}`;
+    }
+
+    async exchangeCodeForToken(code) {
+        const { appId, appSecret, redirectUri } = getInstagramConfig();
+        const cleanCode = String(code).split('#')[0].trim();
+
+        const form = new FormData();
+        form.append('client_id', appId);
+        form.append('client_secret', appSecret);
+        form.append('grant_type', 'authorization_code');
+        form.append('redirect_uri', redirectUri);
+        form.append('code', cleanCode);
+
+        const res = await axios.post('https://api.instagram.com/oauth/access_token', form);
+        return parseTokenResponse(res.data);
+    }
+
+    async exchangeForLongLivedToken(shortLivedToken) {
+        const { appSecret } = getInstagramConfig();
+        const res = await axios.get('https://graph.instagram.com/access_token', {
             params: {
-                fields: 'id,username,name,biography,profile_picture_url,followers_count,follows_count,media_count',
+                grant_type: 'ig_exchange_token',
+                client_secret: appSecret,
+                access_token: shortLivedToken,
+            },
+        });
+        return {
+            accessToken: res.data.access_token,
+            expiresIn: res.data.expires_in,
+        };
+    }
+
+    async refreshLongLivedToken(accessToken) {
+        const res = await axios.get('https://graph.instagram.com/refresh_access_token', {
+            params: {
+                grant_type: 'ig_refresh_token',
                 access_token: accessToken,
             },
         });
-        return res.data;
+        return {
+            accessToken: res.data.access_token,
+            expiresIn: res.data.expires_in,
+        };
     }
 
-    /**
-     * Get Instagram Business Account Insights
-     */
+    async getMe(accessToken) {
+        const res = await axios.get(`${this.baseUrl}/me`, {
+            params: {
+                fields: 'user_id,username,name,biography,profile_picture_url,followers_count,follows_count,media_count',
+                access_token: accessToken,
+            },
+        });
+        const profile = res.data;
+        return {
+            ...profile,
+            id: profile.user_id || profile.id,
+        };
+    }
+
+    async getProfile(igAccountId, accessToken) {
+        if (!igAccountId || igAccountId === 'me') {
+            return this.getMe(accessToken);
+        }
+
+        const res = await axios.get(`${this.baseUrl}/${igAccountId}`, {
+            params: {
+                fields: 'user_id,username,name,biography,profile_picture_url,followers_count,follows_count,media_count',
+                access_token: accessToken,
+            },
+        });
+        const profile = res.data;
+        return {
+            ...profile,
+            id: profile.user_id || profile.id,
+        };
+    }
+
     async getAccountInsights(igAccountId, accessToken) {
         try {
             const res = await axios.get(`${this.baseUrl}/${igAccountId}/insights`, {
@@ -52,9 +172,6 @@ class InstagramService {
         }
     }
 
-    /**
-     * Paginate through all media and return reels only.
-     */
     async getAllReels(igAccountId, accessToken) {
         let url = `${this.baseUrl}/${igAccountId}/media`;
         const reels = [];
@@ -82,9 +199,6 @@ class InstagramService {
         return reels;
     }
 
-    /**
-     * Fetch view insights for a single reel.
-     */
     async getReelInsights(mediaId, accessToken) {
         try {
             const insightRes = await axios.get(`${this.baseUrl}/${mediaId}/insights`, {
@@ -103,9 +217,6 @@ class InstagramService {
         }
     }
 
-    /**
-     * Attach view insights to each reel (batched to reduce rate-limit risk).
-     */
     async attachReelInsights(reels, accessToken, concurrency = 5) {
         return mapWithConcurrency(reels, async (item) => {
             const insights = await this.getReelInsights(item.id, accessToken);
@@ -113,9 +224,6 @@ class InstagramService {
         }, concurrency);
     }
 
-    /**
-     * Get all reels with view insights.
-     */
     async getMedia(igAccountId, accessToken) {
         try {
             const reels = await this.getAllReels(igAccountId, accessToken);

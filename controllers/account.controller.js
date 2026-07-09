@@ -1,4 +1,3 @@
-const axios = require("axios");
 const db = require("../models");
 const social_accounts = db.models.social_accounts;
 const {
@@ -72,158 +71,91 @@ function getOAuthRedirectPath(returnTo) {
     return returnTo === "creator" ? "/creator/dashboard" : "/accounts";
 }
 
+function redirectToClient(reply, redirectPath, params = {}) {
+    const clientUrl = (process.env.CLIENT_URL || '').replace(/\/$/, '');
+    const query = new URLSearchParams(params).toString();
+    const destination = `${clientUrl}${redirectPath}${query ? `?${query}` : ''}`;
+    return reply.redirect(destination);
+}
+
+async function connectInstagramAccount(userId, code) {
+    const { accessToken: shortLivedToken } =
+        await instagramService.exchangeCodeForToken(code);
+
+    const { accessToken, expiresIn } =
+        await instagramService.exchangeForLongLivedToken(shortLivedToken);
+
+    const tokenExpiry = expiresIn
+        ? new Date(Date.now() + expiresIn * 1000)
+        : null;
+
+    const profile = await instagramService.getMe(accessToken);
+
+    const accountData = {
+        account_id: profile.id,
+        username: profile.username,
+        display_name: profile.name,
+        followers_count: profile.followers_count || 0,
+        following_count: profile.follows_count || 0,
+        total_posts: profile.media_count || 0,
+        engagement_rate: 0,
+        access_token: accessToken,
+        token_expiry: tokenExpiry,
+        is_connected: true,
+        status: "active",
+        last_synced_at: new Date(),
+    };
+
+    const [account, created] = await social_accounts.findOrCreate({
+        where: { user_id: userId, platform: "instagram" },
+        defaults: accountData,
+    });
+
+    if (!created) {
+        await account.update(accountData);
+    }
+
+    return account;
+}
+
 exports.connectInstagram = async (request, reply) => {
-    const appId = process.env.FACEBOOK_APP_ID;
-    const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
-    const scope =
-        "instagram_basic,instagram_manage_insights,pages_read_engagement,public_profile";
-    const returnTo = request.query.returnTo || "accounts";
-    const state = `${request.user.id}|${returnTo}`;
+    try {
+        const returnTo = request.query.returnTo || "accounts";
+        const state = `${request.user.id}|${returnTo}`;
+        const url = instagramService.getOAuthUrl(state);
 
-    const url = `https://www.facebook.com/v18.0/dialog/oauth?client_id=${appId}&redirect_uri=${redirectUri}&scope=${scope}&state=${state}&response_type=code`;
-
-    // const url =
-    //     `https://www.facebook.com/v18.0/dialog/oauth` +
-    //     `?client_id=${appId}` +
-    //     `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-    //     `&scope=${encodeURIComponent(scope)}` +
-    //     `&state=${state}` +
-    //     `&response_type=code`;
-
-    reply.send({ url });
+        reply.send({
+            url,
+            redirect_uri: instagramService.getRedirectUri(),
+            setup_hint:
+                'Register redirect_uri in Meta Dashboard > Instagram > API setup with Instagram login > Business login settings > OAuth redirect URIs',
+        });
+    } catch (error) {
+        reply.status(400).send({
+            success: false,
+            message: error.message,
+        });
+    }
 };
 
 exports.instagramCallback = async (request, reply) => {
-    const { code, state } = request.query;
+    const { code, state, error: oauthError, error_description: errorDescription } = request.query;
     const [userId, returnTo = "accounts"] = (state || "").split("|");
     const redirectPath = getOAuthRedirectPath(returnTo);
 
-    if (!code) {
-        return reply.redirect(
-            `${process.env.CLIENT_URL}${redirectPath}?error=access_denied`,
-        );
+    if (oauthError || !code) {
+        return redirectToClient(reply, redirectPath, {
+            error: oauthError || 'access_denied',
+            error_description: errorDescription,
+        });
     }
 
     try {
-        // 1. Exchange code for User Access Token
-        const tokenResponse = await axios.get(
-            `https://graph.facebook.com/v18.0/oauth/access_token`,
-            {
-                params: {
-                    client_id: process.env.FACEBOOK_APP_ID,
-                    client_secret: process.env.FACEBOOK_APP_SECRET,
-                    redirect_uri: process.env.FACEBOOK_REDIRECT_URI,
-                    code,
-                },
-            },
-        );
-
-        const userAccessToken = tokenResponse.data.access_token;
-
-        // 2. Get list of Pages user manages
-        const pagesRes = await axios.get(
-            `https://graph.facebook.com/v18.0/me/accounts`,
-            {
-                params: { access_token: userAccessToken },
-            },
-        );
-
-        const pagesList = pagesRes.data.data;
-
-        // 3. Find Page with linked Instagram Business Account
-        let igAccountData = null;
-        for (const page of pagesList) {
-            const pageInfo = await axios.get(
-                `https://graph.facebook.com/v18.0/${page.id}?fields=instagram_business_account&access_token=${page.access_token}`,
-            );
-            if (pageInfo.data.instagram_business_account) {
-                igAccountData = {
-                    id: pageInfo.data.instagram_business_account.id,
-                    page_token: page.access_token,
-                };
-                break;
-            }
-        }
-
-        if (!igAccountData) {
-            return reply.redirect(
-                `${process.env.CLIENT_URL}${redirectPath}?error=no_ig_business_account_found`,
-            );
-        }
-
-        // 4. Get Instagram Profile details
-        const profile = await instagramService.getProfile(
-            igAccountData.id,
-            igAccountData.page_token,
-        );
-
-        // 5. Get recent media for initial engagement calculation
-        const media = await instagramService.getMedia(
-            igAccountData.id,
-            igAccountData.page_token,
-        );
-
-        // get insights for the media
-        // const insights = await instagramService.getAccountInsights(
-        //     igAccountData.id,
-        //     igAccountData.page_token,
-        // );
-
-
-        const avgEngagement =
-            media.length > 0
-                ? media.reduce((acc, m) => acc + (m.like_count + m.comments_count), 0) /
-                media.length
-                : 0;
-        const engagementRate =
-            profile.followers_count > 0
-                ? (avgEngagement / profile.followers_count) * 100
-                : 0;
-
-        // 6. Save or update social_accounts
-        const [account, created] = await social_accounts.findOrCreate({
-            where: { user_id: userId, platform: "instagram" },
-            defaults: {
-                account_id: profile.id,
-                username: profile.username,
-                display_name: profile.name,
-                // profile_image: profile.profile_picture_url,
-                followers_count: profile.followers_count,
-                following_count: profile.follows_count,
-                total_posts: profile.media_count,
-                engagement_rate: parseFloat(engagementRate.toFixed(2)),
-                access_token: igAccountData.page_token,
-                is_connected: true,
-                status: "active",
-                last_synced_at: new Date(),
-            },
-        });
-
-        if (!created) {
-            await account.update({
-                account_id: profile.id,
-                username: profile.username,
-                display_name: profile.name,
-                // profile_image: profile.profile_picture_url,
-                followers_count: profile.followers_count,
-                following_count: profile.follows_count,
-                total_posts: profile.media_count,
-                engagement_rate: parseFloat(engagementRate.toFixed(2)),
-                access_token: igAccountData.page_token,
-                is_connected: true,
-                status: "active",
-                last_synced_at: new Date(),
-            });
-        }
-
-        reply.redirect(
-            `${process.env.CLIENT_URL}${redirectPath}?success=connected`,
-        );
+        await connectInstagramAccount(userId, code);
+        return redirectToClient(reply, redirectPath, { success: 'connected' });
     } catch (error) {
-        console.error("FB/IG OAuth Error:", error.response?.data || error.message);
-        reply.redirect(
-            `${process.env.CLIENT_URL}${redirectPath}?error=oauth_failed`,
-        );
+        console.error("Instagram OAuth Error:", error.response?.data || error.message);
+        return redirectToClient(reply, redirectPath, { error: 'oauth_failed' });
     }
 };
 
@@ -239,20 +171,29 @@ exports.syncAccountData = async (request, reply) => {
                 .status(404)
                 .send({ success: false, message: "Account not found" });
 
-        // Fetch detailed data
+        let accessToken = account.access_token;
+        let tokenExpiry = account.token_expiry;
+
+        if (tokenExpiry && new Date(tokenExpiry) <= new Date()) {
+            const refreshed = await instagramService.refreshLongLivedToken(accessToken);
+            accessToken = refreshed.accessToken;
+            tokenExpiry = refreshed.expiresIn
+                ? new Date(Date.now() + refreshed.expiresIn * 1000)
+                : null;
+            await account.update({
+                access_token: accessToken,
+                token_expiry: tokenExpiry,
+            });
+        }
+
         const profile = await instagramService.getProfile(
             account.account_id,
-            account.access_token,
+            accessToken,
         );
-        // const insights = await instagramService.getAccountInsights(
-        //     account.account_id,
-        //     account.access_token,
-        // );
-        // console.log("insights", insights);
 
         const media = await instagramService.getMedia(
             account.account_id,
-            account.access_token,
+            accessToken,
         );
 
         const reelsStats = computeReelsStats(media);
@@ -269,7 +210,6 @@ exports.syncAccountData = async (request, reply) => {
                 views: getMediaViews(m),
             }));
 
-        // Recalculate engagement rate
         const avgEngagement =
             media.length > 0
                 ? media.reduce(
@@ -284,7 +224,6 @@ exports.syncAccountData = async (request, reply) => {
 
         await account.update({
             display_name: profile.name,
-            // profile_image: profile.profile_picture_url,
             followers_count: profile.followers_count,
             following_count: profile.follows_count,
             total_posts: profile.media_count,
