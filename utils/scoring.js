@@ -9,7 +9,7 @@ function calculateInfluencerScore(followers, engagementRate) {
     // 10k followers = ~40 points
     // 100k followers = ~50 points
     // 1M followers = ~60 points
-    const baseScore = Math.log10(followers || 1) * 10;
+    const baseScore = Math.log10(followers || 1) * 10; 
 
     // Engagement rate (e.g., 3.2%) adds up to 40 points
     const engagementBoost = (engagementRate || 0) * 8;
