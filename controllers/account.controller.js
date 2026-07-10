@@ -72,7 +72,7 @@ function getOAuthRedirectPath(returnTo) {
 }
 
 function redirectToClient(reply, redirectPath, params = {}) {
-    const clientUrl = (process.env.CLIENT_URL || '').replace(/\/$/, '');
+    const clientUrl = (process.env.CLIENT_URL || 'https://app.melotap.com').replace(/\/$/, '');
     const query = new URLSearchParams(params).toString();
     const destination = `${clientUrl}${redirectPath}${query ? `?${query}` : ''}`;
     return reply.redirect(destination);

@@ -28,15 +28,28 @@ fastify.register(require('@fastify/static'), {
     prefix: '/uploads/',
 });
 
+const corsOrigins = [
+    'https://app.melotap.com',
+    'https://www.app.melotap.com',
+    'https://melotap.com',
+    'https://www.melotap.com',
+    'http://localhost:5173',
+    'https://localhost:5173',
+    'http://localhost:3000',
+];
+
+if (process.env.CLIENT_URL) {
+    const clientUrl = process.env.CLIENT_URL.replace(/\/$/, '');
+    if (!corsOrigins.includes(clientUrl)) {
+        corsOrigins.push(clientUrl);
+    }
+}
+
 fastify.register(require('@fastify/cors'), {
-    origin: [
-        'https://app.melotap.com',
-        'https://app.melotap.com/',
-        'http://localhost:5173',
-        'http://localhost:5173/',
-        'http://localhost:3000',
-    ],
+    origin: corsOrigins,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
+    exposedHeaders: ['Content-Disposition'],
     credentials: true,
 });
 
