@@ -59,21 +59,25 @@ class InstagramService {
         if (embedUrl) {
             const url = new URL(embedUrl);
             url.searchParams.set('state', state);
+            // Keep Meta's redirect_uri from the Embed URL — do not override it.
             return url.toString();
         }
 
         const { appId, redirectUri } = getInstagramConfig();
         const scope = 'instagram_business_basic,instagram_business_manage_insights';
-        const params = [
-            `client_id=${appId}`,
-            `redirect_uri=${encodeURIComponent(redirectUri)}`,
-            `scope=${scope}`,
-            `response_type=code`,
-            `state=${encodeURIComponent(state)}`,
-            `enable_fb_login=false`,
-        ].join('&');
 
-        return `https://www.instagram.com/oauth/authorize?${params}`;
+        // Use api.instagram.com (Meta docs). It redirects to www.instagram.com.
+        // redirect_uri must match Meta Dashboard OAuth redirect URIs exactly.
+        const params = new URLSearchParams({
+            client_id: appId,
+            redirect_uri: redirectUri,
+            scope,
+            response_type: 'code',
+            state,
+            enable_fb_login: 'false',
+        });
+
+        return `https://api.instagram.com/oauth/authorize?${params.toString()}`;
     }
 
     async exchangeCodeForToken(code) {

@@ -122,13 +122,15 @@ exports.connectInstagram = async (request, reply) => {
     try {
         const returnTo = request.query.returnTo || "accounts";
         const state = `${request.user.id}|${returnTo}`;
+        const redirectUri = instagramService.getRedirectUri();
         const url = instagramService.getOAuthUrl(state);
 
         reply.send({
             url,
-            redirect_uri: instagramService.getRedirectUri(),
+            redirect_uri: redirectUri,
+            client_id: process.env.INSTAGRAM_APP_ID,
             setup_hint:
-                'Register redirect_uri in Meta Dashboard > Instagram > API setup with Instagram login > Business login settings > OAuth redirect URIs',
+                'redirect_uri and client_id must match Meta Dashboard > Instagram > API setup with Instagram login > Business login settings. Copy the Embed URL into INSTAGRAM_EMBED_URL if this keeps failing.',
         });
     } catch (error) {
         reply.status(400).send({
