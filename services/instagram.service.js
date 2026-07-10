@@ -14,13 +14,8 @@ async function mapWithConcurrency(items, fn, concurrency = 5) {
 }
 
 function normalizeRedirectUri(uri) {
-    if (!uri) return uri;
-
-    let normalized = uri.trim();
-    if (process.env.INSTAGRAM_REDIRECT_TRAILING_SLASH !== 'false' && !normalized.endsWith('/')) {
-        normalized += '/';
-    }
-    return normalized;
+    // Keep exact URI from env so it matches Meta Dashboard character-for-character.
+    return uri ? uri.trim() : uri;
 }
 
 function getInstagramConfig() {

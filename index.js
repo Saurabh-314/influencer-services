@@ -5,6 +5,7 @@ const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const fastify = require('fastify')({
     logger: true,
     bodyLimit: MAX_UPLOAD_BYTES + (512 * 1024),
+    ignoreTrailingSlash: true,
 });
 const path = require('path');
 const { startPayoutReleaseJob } = require('./jobs/releasePayouts');
