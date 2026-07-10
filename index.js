@@ -5,10 +5,42 @@ const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const fastify = require('fastify')({
     logger: true,
     bodyLimit: MAX_UPLOAD_BYTES + (512 * 1024),
-    ignoreTrailingSlash: true,
+    routerOptions: {
+        ignoreTrailingSlash: true,
+    },
 });
 const path = require('path');
 const { startPayoutReleaseJob } = require('./jobs/releasePayouts');
+
+const corsOrigins = new Set([
+    'https://app.melotap.com',
+    'https://www.app.melotap.com',
+    'https://melotap.com',
+    'https://www.melotap.com',
+    'http://localhost:5173',
+    'https://localhost:5173',
+    'http://localhost:3000',
+]);
+
+if (process.env.CLIENT_URL) {
+    corsOrigins.add(process.env.CLIENT_URL.replace(/\/$/, ''));
+}
+
+// Register CORS first so preflight OPTIONS always gets headers.
+fastify.register(require('@fastify/cors'), {
+    origin(origin, callback) {
+        // Allow non-browser / same-origin requests (no Origin header).
+        if (!origin || corsOrigins.has(origin)) {
+            callback(null, true);
+            return;
+        }
+        callback(null, false);
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
+    exposedHeaders: ['Content-Disposition'],
+    credentials: true,
+});
 
 fastify.register(require('@fastify/helmet'), {
     crossOriginResourcePolicy: { policy: 'cross-origin' },
@@ -26,31 +58,6 @@ fastify.register(require('@fastify/multipart'), {
 fastify.register(require('@fastify/static'), {
     root: path.join(__dirname, 'uploads'),
     prefix: '/uploads/',
-});
-
-const corsOrigins = [
-    'https://app.melotap.com',
-    'https://www.app.melotap.com',
-    'https://melotap.com',
-    'https://www.melotap.com',
-    'http://localhost:5173',
-    'https://localhost:5173',
-    'http://localhost:3000',
-];
-
-if (process.env.CLIENT_URL) {
-    const clientUrl = process.env.CLIENT_URL.replace(/\/$/, '');
-    if (!corsOrigins.includes(clientUrl)) {
-        corsOrigins.push(clientUrl);
-    }
-}
-
-fastify.register(require('@fastify/cors'), {
-    origin: corsOrigins,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
-    exposedHeaders: ['Content-Disposition'],
-    credentials: true,
 });
 
 fastify.addHook('onRequest', (request, reply, done) => {
