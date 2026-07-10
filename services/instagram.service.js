@@ -14,14 +14,28 @@ async function mapWithConcurrency(items, fn, concurrency = 5) {
 }
 
 function normalizeRedirectUri(uri) {
-    // Keep exact URI from env so it matches Meta Dashboard character-for-character.
+    // Keep exact URI from env/embed so it matches Meta Dashboard character-for-character.
     return uri ? uri.trim() : uri;
+}
+
+function getRedirectUriFromEmbedUrl(embedUrl) {
+    if (!embedUrl) return null;
+    try {
+        return new URL(embedUrl).searchParams.get('redirect_uri');
+    } catch {
+        return null;
+    }
 }
 
 function getInstagramConfig() {
     const appId = process.env.INSTAGRAM_APP_ID;
     const appSecret = process.env.INSTAGRAM_APP_SECRET;
-    const redirectUri = normalizeRedirectUri(process.env.INSTAGRAM_REDIRECT_URI);
+    const embedUrl = process.env.INSTAGRAM_EMBED_URL?.trim();
+
+    // Prefer redirect_uri from Embed URL so authorize + token exchange always match.
+    const redirectUri = normalizeRedirectUri(
+        getRedirectUriFromEmbedUrl(embedUrl) || process.env.INSTAGRAM_REDIRECT_URI,
+    );
 
     if (!appId || !appSecret || !redirectUri) {
         throw new Error(
@@ -29,7 +43,7 @@ function getInstagramConfig() {
         );
     }
 
-    return { appId, appSecret, redirectUri };
+    return { appId, appSecret, redirectUri, embedUrl };
 }
 
 function parseTokenResponse(data) {
@@ -55,7 +69,8 @@ class InstagramService {
     }
 
     getOAuthUrl(state) {
-        const embedUrl = process.env.INSTAGRAM_EMBED_URL?.trim();
+        const { embedUrl, appId, redirectUri } = getInstagramConfig();
+
         if (embedUrl) {
             const url = new URL(embedUrl);
             url.searchParams.set('state', state);
@@ -63,11 +78,7 @@ class InstagramService {
             return url.toString();
         }
 
-        const { appId, redirectUri } = getInstagramConfig();
         const scope = 'instagram_business_basic,instagram_business_manage_insights';
-
-        // Use api.instagram.com (Meta docs). It redirects to www.instagram.com.
-        // redirect_uri must match Meta Dashboard OAuth redirect URIs exactly.
         const params = new URLSearchParams({
             client_id: appId,
             redirect_uri: redirectUri,
@@ -83,6 +94,8 @@ class InstagramService {
     async exchangeCodeForToken(code) {
         const { appId, appSecret, redirectUri } = getInstagramConfig();
         const cleanCode = String(code).split('#')[0].trim();
+
+        console.log('Instagram token exchange using redirect_uri:', redirectUri);
 
         const form = new FormData();
         form.append('client_id', appId);
