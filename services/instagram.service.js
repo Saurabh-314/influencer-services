@@ -110,13 +110,16 @@ class InstagramService {
 
     async exchangeForLongLivedToken(shortLivedToken) {
         const { appSecret } = getInstagramConfig();
-        const res = await axios.get('https://graph.instagram.com/access_token', {
-            params: {
+        // Instagram now requires POST for the token exchange; GET returns
+        // "Unsupported request - method type: get" (IGApiException 100).
+        const res = await axios.post(
+            'https://graph.instagram.com/access_token',
+            new URLSearchParams({
                 grant_type: 'ig_exchange_token',
                 client_secret: appSecret,
                 access_token: shortLivedToken,
-            },
-        });
+            }),
+        );
         return {
             accessToken: res.data.access_token,
             expiresIn: res.data.expires_in,
@@ -124,12 +127,13 @@ class InstagramService {
     }
 
     async refreshLongLivedToken(accessToken) {
-        const res = await axios.get('https://graph.instagram.com/refresh_access_token', {
-            params: {
+        const res = await axios.post(
+            'https://graph.instagram.com/refresh_access_token',
+            new URLSearchParams({
                 grant_type: 'ig_refresh_token',
                 access_token: accessToken,
-            },
-        });
+            }),
+        );
         return {
             accessToken: res.data.access_token,
             expiresIn: res.data.expires_in,
