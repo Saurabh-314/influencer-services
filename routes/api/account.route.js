@@ -8,6 +8,7 @@ async function accountRoutes(fastify) {
     fastify.post('/connect', { preHandler: [authenticateUser] }, accountController.connectAccount);
     fastify.get('/:id', { preHandler: [authenticateUser] }, accountController.getAccountDetail);
     fastify.post('/:id/sync', { preHandler: [authenticateUser] }, accountController.syncAccountData);
+    fastify.delete('/:id', { preHandler: [authenticateUser] }, accountController.disconnectAccount);
 }
 
 module.exports = accountRoutes;

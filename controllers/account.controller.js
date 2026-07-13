@@ -161,6 +161,29 @@ exports.instagramCallback = async (request, reply) => {
     }
 };
 
+exports.disconnectAccount = async (request, reply) => {
+    try {
+        const { id } = request.params;
+        const account = await social_accounts.findOne({
+            where: { id, user_id: request.user.id },
+        });
+
+        if (!account)
+            return reply
+                .status(404)
+                .send({ success: false, message: "Account not found" });
+
+        await account.destroy();
+
+        reply.send({
+            success: true,
+            message: "Account disconnected successfully",
+        });
+    } catch (error) {
+        reply.status(500).send({ success: false, message: error.message });
+    }
+};
+
 exports.syncAccountData = async (request, reply) => {
     const { id } = request.params;
     try {
