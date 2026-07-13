@@ -1,6 +1,6 @@
 const axios = require('axios');
 
-const MEDIA_FIELDS = 'id,caption,media_type,media_product_type,media_url,permalink,timestamp,like_count,comments_count';
+const MEDIA_FIELDS = 'id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count';
 const API_VERSION = 'v21.0';
 
 async function mapWithConcurrency(items, fn, concurrency = 5) {
@@ -194,6 +194,35 @@ class InstagramService {
                 params: isFirstPage
                     ? {
                         fields: MEDIA_FIELDS,
+                        limit: 100,
+                        access_token: accessToken,
+                    }
+                    : {},
+            });
+
+            const pageReels = (res.data.data || []).filter(
+                (item) => item.media_product_type === 'REELS',
+            );
+            reels.push(...pageReels);
+
+            url = res.data.paging?.next || null;
+        }
+
+        return reels;
+    }
+
+    async getReelsWithInsights(igAccountId, accessToken) {
+        let url = `${this.baseUrl}/${igAccountId}/media`;
+        const reels = [];
+
+        while (url) {
+            const isFirstPage = url === `${this.baseUrl}/${igAccountId}/media`;
+            const res = await axios.get(url, {
+                params: isFirstPage
+                    ? {
+                        // Field expansion pulls insights inline, avoiding an
+                        // extra insights request per reel (N+1).
+                        fields: `${MEDIA_FIELDS},insights.metric(views)`,
                         limit: 100,
                         access_token: accessToken,
                     }

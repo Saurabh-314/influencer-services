@@ -18,13 +18,27 @@ function calculateInfluencerScore(followers, engagementRate) {
 }
 
 function getMediaViews(media) {
-    const viewsInsight = media.insights?.find(
+    // Insights can arrive as an array (per-media insights call) or nested under
+    // `insights.data` (field expansion on the media edge). Support both.
+    const insights = Array.isArray(media.insights)
+        ? media.insights
+        : media.insights?.data ?? [];
+    const viewsInsight = insights.find(
         (i) => i.name === 'views' || i.name === 'video_views' || i.name === 'plays',
     );
     if (viewsInsight?.values?.[0]?.value != null) {
         return viewsInsight.values[0].value;
     }
     return (media.like_count || 0) * 10;
+}
+
+function getViewBucket(views) {
+    if (views >= 10_000_000) return '>10m';
+    if (views >= 1_000_000) return '>1m';
+    if (views >= 100_000) return '>100k';
+    if (views >= 10_000) return '>10k';
+    if (views >= 1_000) return '>1k';
+    return '<1k';
 }
 
 function computeReelsStats(media) {
@@ -90,5 +104,6 @@ module.exports = {
     getVusicRank,
     getPayoutForRank,
     getMediaViews,
+    getViewBucket,
     computeReelsStats,
 };

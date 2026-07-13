@@ -5,6 +5,7 @@ const {
     calculateAdvStats,
     computeReelsStats,
     getMediaViews,
+    getViewBucket,
 } = require("../utils/scoring");
 
 const instagramService = require("../services/instagram.service");
@@ -184,6 +185,82 @@ exports.disconnectAccount = async (request, reply) => {
     }
 };
 
+async function ensureValidAccessToken(account) {
+    let accessToken = account.access_token;
+    const tokenExpiry = account.token_expiry;
+
+    if (tokenExpiry && new Date(tokenExpiry) <= new Date()) {
+        const refreshed = await instagramService.refreshLongLivedToken(accessToken);
+        accessToken = refreshed.accessToken;
+        const newExpiry = refreshed.expiresIn
+            ? new Date(Date.now() + refreshed.expiresIn * 1000)
+            : null;
+        await account.update({
+            access_token: accessToken,
+            token_expiry: newExpiry,
+        });
+    }
+
+    return accessToken;
+}
+
+exports.getAccountReels = async (request, reply) => {
+    const { id } = request.params;
+    const { bucket = "total", limit = 30 } = request.query;
+    try {
+        const account = await social_accounts.findOne({
+            where: { id, user_id: request.user.id },
+        });
+
+        if (!account)
+            return reply
+                .status(404)
+                .send({ success: false, message: "Account not found" });
+
+        const accessToken = await ensureValidAccessToken(account);
+
+        const rawReels = await instagramService.getReelsWithInsights(
+            account.account_id,
+            accessToken,
+        );
+
+        const reels = rawReels
+            .map((m) => {
+                const views = getMediaViews(m);
+                return {
+                    id: m.id,
+                    media_url: m.media_url,
+                    thumbnail_url: m.thumbnail_url,
+                    permalink: m.permalink,
+                    caption: m.caption,
+                    timestamp: m.timestamp,
+                    like_count: m.like_count,
+                    comments_count: m.comments_count,
+                    views,
+                    bucket: getViewBucket(views),
+                };
+            })
+            .sort((a, b) => b.views - a.views);
+
+        const filtered =
+            bucket === "total" ? reels : reels.filter((r) => r.bucket === bucket);
+
+        reply.send({
+            success: true,
+            data: {
+                bucket,
+                reels: filtered.slice(0, Number(limit)),
+            },
+        });
+    } catch (error) {
+        console.error(
+            "Get Account Reels Error:",
+            error.response?.data || error.message,
+        );
+        reply.status(500).send({ success: false, message: error.message });
+    }
+};
+
 exports.syncAccountData = async (request, reply) => {
     const { id } = request.params;
     try {
@@ -196,20 +273,7 @@ exports.syncAccountData = async (request, reply) => {
                 .status(404)
                 .send({ success: false, message: "Account not found" });
 
-        let accessToken = account.access_token;
-        let tokenExpiry = account.token_expiry;
-
-        if (tokenExpiry && new Date(tokenExpiry) <= new Date()) {
-            const refreshed = await instagramService.refreshLongLivedToken(accessToken);
-            accessToken = refreshed.accessToken;
-            tokenExpiry = refreshed.expiresIn
-                ? new Date(Date.now() + refreshed.expiresIn * 1000)
-                : null;
-            await account.update({
-                access_token: accessToken,
-                token_expiry: tokenExpiry,
-            });
-        }
+        const accessToken = await ensureValidAccessToken(account);
 
         const profile = await instagramService.getProfile(
             account.account_id,
@@ -228,6 +292,7 @@ exports.syncAccountData = async (request, reply) => {
             .map((m) => ({
                 id: m.id,
                 media_url: m.media_url,
+                thumbnail_url: m.thumbnail_url,
                 permalink: m.permalink,
                 like_count: m.like_count,
                 comments_count: m.comments_count,
