@@ -284,6 +284,7 @@ exports.syncAccountData = async (request, reply) => {
             account.account_id,
             accessToken,
         );
+        console.log("media", media);
 
         const reelsStats = computeReelsStats(media);
         const topPosts = [...media]
