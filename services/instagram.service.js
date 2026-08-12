@@ -3,6 +3,45 @@ const axios = require('axios');
 const MEDIA_FIELDS = 'id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count';
 const API_VERSION = 'v21.0';
 
+// Instagram API with Instagram Login (Business Login for Instagram).
+// Docs: https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/business-login/
+const OAUTH_AUTHORIZE_URL = 'https://www.instagram.com/oauth/authorize';
+const OAUTH_ACCESS_TOKEN_URL = 'https://api.instagram.com/oauth/access_token';
+const GRAPH_ACCESS_TOKEN_URL = 'https://graph.instagram.com/access_token';
+const GRAPH_REFRESH_TOKEN_URL = 'https://graph.instagram.com/refresh_access_token';
+const OAUTH_SCOPES = 'instagram_business_basic,instagram_business_manage_insights';
+
+function sanitizeMetaError(error) {
+    const data = error?.response?.data;
+    if (!data) {
+        return { message: error?.message || 'Unknown error' };
+    }
+    if (data.error) {
+        return {
+            message: data.error.message,
+            type: data.error.type,
+            code: data.error.code,
+            fbtrace_id: data.error.fbtrace_id,
+        };
+    }
+    return {
+        message: data.error_message || data.message || JSON.stringify(data),
+        type: data.error_type,
+        code: data.code,
+    };
+}
+
+function logOAuthStep(step, details = {}) {
+    console.log('[Instagram OAuth]', step, details);
+}
+
+function describeToken(token) {
+    if (!token) {
+        return { present: false, length: 0 };
+    }
+    return { present: true, length: String(token).length };
+}
+
 async function mapWithConcurrency(items, fn, concurrency = 5) {
     const results = [];
     for (let i = 0; i < items.length; i += concurrency) {
@@ -47,15 +86,24 @@ function getInstagramConfig() {
 }
 
 function parseTokenResponse(data) {
-    if (data?.data?.[0]) {
-        return {
-            accessToken: data.data[0].access_token,
-            userId: data.data[0].user_id,
-        };
+    if (data?.error || data?.error_message) {
+        throw new Error(
+            data.error?.message || data.error_message || 'Instagram token exchange failed',
+        );
     }
+
+    const entry = Array.isArray(data?.data) ? data.data[0] : data;
+    const accessToken = entry?.access_token;
+    const userId = entry?.user_id ?? entry?.id;
+
+    if (!accessToken) {
+        throw new Error('Instagram token exchange returned no access token');
+    }
+
     return {
-        accessToken: data.access_token,
-        userId: data.user_id,
+        accessToken,
+        userId: userId != null ? String(userId) : undefined,
+        permissions: entry?.permissions,
     };
 }
 
@@ -78,45 +126,106 @@ class InstagramService {
             return url.toString();
         }
 
-        const scope = 'instagram_business_basic,instagram_business_manage_insights';
         const params = new URLSearchParams({
             client_id: appId,
             redirect_uri: redirectUri,
-            scope,
+            scope: OAUTH_SCOPES,
             response_type: 'code',
             state,
             enable_fb_login: 'false',
         });
 
-        return `https://api.instagram.com/oauth/authorize?${params.toString()}`;
+        return `${OAUTH_AUTHORIZE_URL}?${params.toString()}`;
     }
 
     async exchangeCodeForToken(code) {
         const { appId, appSecret, redirectUri } = getInstagramConfig();
         const cleanCode = String(code).split('#')[0].trim();
 
-        console.log('Instagram token exchange using redirect_uri:', redirectUri);
+        logOAuthStep('exchangeCodeForToken:start', {
+            endpoint: OAUTH_ACCESS_TOKEN_URL,
+            method: 'POST',
+            contentType: 'application/x-www-form-urlencoded',
+            redirectUri,
+            codePresent: Boolean(cleanCode),
+            codeLength: cleanCode.length,
+        });
 
-        const form = new FormData();
-        form.append('client_id', appId);
-        form.append('client_secret', appSecret);
-        form.append('grant_type', 'authorization_code');
-        form.append('redirect_uri', redirectUri);
-        form.append('code', cleanCode);
+        const body = new URLSearchParams({
+            client_id: appId,
+            client_secret: appSecret,
+            grant_type: 'authorization_code',
+            redirect_uri: redirectUri,
+            code: cleanCode,
+        });
 
-        const res = await axios.post('https://api.instagram.com/oauth/access_token', form);
-        return parseTokenResponse(res.data);
+        const res = await axios.post(OAUTH_ACCESS_TOKEN_URL, body.toString(), {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        });
+
+        const parsed = parseTokenResponse(res.data);
+
+        logOAuthStep('exchangeCodeForToken:success', {
+            httpStatus: res.status,
+            token: describeToken(parsed.accessToken),
+            userId: parsed.userId,
+            permissions: parsed.permissions,
+        });
+
+        return parsed;
+    }
+
+    async verifyShortLivedToken(shortLivedToken) {
+        logOAuthStep('verifyShortLivedToken:start', {
+            endpoint: `${this.baseUrl}/me`,
+            method: 'GET',
+            token: describeToken(shortLivedToken),
+        });
+
+        const res = await axios.get(`${this.baseUrl}/me`, {
+            params: {
+                fields: 'user_id,username,account_type',
+                access_token: shortLivedToken,
+            },
+        });
+
+        logOAuthStep('verifyShortLivedToken:success', {
+            httpStatus: res.status,
+            userId: res.data.user_id || res.data.id,
+            username: res.data.username,
+            accountType: res.data.account_type,
+        });
+
+        return res.data;
     }
 
     async exchangeForLongLivedToken(shortLivedToken) {
+        if (!shortLivedToken) {
+            throw new Error('Missing short-lived Instagram token for long-lived exchange');
+        }
+
         const { appSecret } = getInstagramConfig();
-        const res = await axios.get('https://graph.instagram.com/access_token', {
+
+        logOAuthStep('exchangeForLongLivedToken:start', {
+            endpoint: GRAPH_ACCESS_TOKEN_URL,
+            method: 'GET',
+            token: describeToken(shortLivedToken),
+        });
+
+        const res = await axios.get(GRAPH_ACCESS_TOKEN_URL, {
             params: {
                 grant_type: 'ig_exchange_token',
                 client_secret: appSecret,
                 access_token: shortLivedToken,
             },
         });
+
+        logOAuthStep('exchangeForLongLivedToken:success', {
+            httpStatus: res.status,
+            token: describeToken(res.data.access_token),
+            expiresIn: res.data.expires_in,
+        });
+
         return {
             accessToken: res.data.access_token,
             expiresIn: res.data.expires_in,
@@ -124,12 +233,25 @@ class InstagramService {
     }
 
     async refreshLongLivedToken(accessToken) {
-        const res = await axios.get('https://graph.instagram.com/refresh_access_token', {
+        logOAuthStep('refreshLongLivedToken:start', {
+            endpoint: GRAPH_REFRESH_TOKEN_URL,
+            method: 'GET',
+            token: describeToken(accessToken),
+        });
+
+        const res = await axios.get(GRAPH_REFRESH_TOKEN_URL, {
             params: {
                 grant_type: 'ig_refresh_token',
                 access_token: accessToken,
             },
         });
+
+        logOAuthStep('refreshLongLivedToken:success', {
+            httpStatus: res.status,
+            token: describeToken(res.data.access_token),
+            expiresIn: res.data.expires_in,
+        });
+
         return {
             accessToken: res.data.access_token,
             expiresIn: res.data.expires_in,
@@ -279,3 +401,5 @@ class InstagramService {
 }
 
 module.exports = new InstagramService();
+module.exports.sanitizeMetaError = sanitizeMetaError;
+module.exports.logOAuthStep = logOAuthStep;

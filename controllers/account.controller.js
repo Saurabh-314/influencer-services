@@ -9,6 +9,7 @@ const {
 } = require("../utils/scoring");
 
 const instagramService = require("../services/instagram.service");
+const { sanitizeMetaError, logOAuthStep } = instagramService;
 
 exports.getConnectedAccounts = async (request, reply) => {
     try {
@@ -80,11 +81,24 @@ function redirectToClient(reply, redirectPath, params = {}) {
 }
 
 async function connectInstagramAccount(userId, code) {
-    const { accessToken: shortLivedToken } =
+    logOAuthStep('connectInstagramAccount:start', { userId });
+
+    const { accessToken: shortLivedToken, userId: igUserId, permissions } =
         await instagramService.exchangeCodeForToken(code);
+
+    // Confirms the short-lived token is a valid Instagram User token before long-lived exchange.
+    await instagramService.verifyShortLivedToken(shortLivedToken);
 
     const { accessToken, expiresIn } =
         await instagramService.exchangeForLongLivedToken(shortLivedToken);
+
+    logOAuthStep('connectInstagramAccount:tokenReady', {
+        userId,
+        igUserId,
+        permissions,
+        token: { present: Boolean(accessToken), length: String(accessToken || '').length },
+        expiresIn,
+    });
 
     const tokenExpiry = expiresIn
         ? new Date(Date.now() + expiresIn * 1000)
@@ -142,11 +156,20 @@ exports.connectInstagram = async (request, reply) => {
 };
 
 exports.instagramCallback = async (request, reply) => {
-    console.log("instagramCallback", request.query);
     const { code, state, error: oauthError, error_description: errorDescription } = request.query;
     const [userId, returnTo = "accounts"] = (state || "").split("|");
     const redirectPath = getOAuthRedirectPath(returnTo);
-    console.log("redirectPath", redirectPath);
+
+    logOAuthStep('instagramCallback:received', {
+        redirectPath,
+        userId: userId || null,
+        returnTo,
+        codePresent: Boolean(code),
+        codeLength: code ? String(code).split('#')[0].trim().length : 0,
+        oauthError: oauthError || null,
+        redirectUri: instagramService.getRedirectUri(),
+    });
+
     if (oauthError || !code) {
         return redirectToClient(reply, redirectPath, {
             error: oauthError || 'access_denied',
@@ -154,12 +177,21 @@ exports.instagramCallback = async (request, reply) => {
         });
     }
 
+    if (!userId) {
+        logOAuthStep('instagramCallback:invalidState', { statePresent: Boolean(state) });
+        return redirectToClient(reply, redirectPath, { error: 'invalid_state' });
+    }
+
     try {
         await connectInstagramAccount(userId, code);
         return redirectToClient(reply, redirectPath, { success: 'connected' });
     } catch (error) {
-        console.error("Instagram OAuth Error:", error.response?.data || error.message);
-        return redirectToClient(reply, redirectPath, { error: 'oauth_failed' });
+        const metaError = sanitizeMetaError(error);
+        logOAuthStep('instagramCallback:failed', metaError);
+        return redirectToClient(reply, redirectPath, {
+            error: 'oauth_failed',
+            error_code: metaError.code,
+        });
     }
 };
 
