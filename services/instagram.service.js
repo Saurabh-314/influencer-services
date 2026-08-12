@@ -108,53 +108,19 @@ class InstagramService {
         return parseTokenResponse(res.data);
     }
 
-    // async exchangeForLongLivedToken(shortLivedToken) {
-    //     const { appSecret } = getInstagramConfig();
-    //     const res = await axios.get('https://graph.instagram.com/access_token', {
-    //         params: {
-    //             grant_type: 'ig_exchange_token',
-    //             client_secret: appSecret,
-    //             access_token: shortLivedToken,
-    //         },
-    //     });
-    //     return {
-    //         accessToken: res.data.access_token,
-    //         expiresIn: res.data.expires_in,
-    //     };
-    // }
-
     async exchangeForLongLivedToken(shortLivedToken) {
         const { appSecret } = getInstagramConfig();
-
-        try {
-            const params = new URLSearchParams({
+        const res = await axios.get('https://graph.instagram.com/access_token', {
+            params: {
                 grant_type: 'ig_exchange_token',
                 client_secret: appSecret,
                 access_token: shortLivedToken,
-            });
-
-            const res = await axios.post(
-                'https://graph.instagram.com/access_token',
-                params.toString(),
-                {
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                    },
-                }
-            );
-
-            return {
-                accessToken: res.data.access_token,
-                expiresIn: res.data.expires_in,
-            };
-        } catch (error) {
-            console.error(
-                'Instagram long-lived token exchange failed:',
-                error.response?.data || error.message
-            );
-
-            throw error;
-        }
+            },
+        });
+        return {
+            accessToken: res.data.access_token,
+            expiresIn: res.data.expires_in,
+        };
     }
 
     async refreshLongLivedToken(accessToken) {
