@@ -115,7 +115,15 @@ async function connectInstagramAccount(userId, code) {
         ? new Date(Date.now() + expiresIn * 1000)
         : null;
 
-    const profile = await instagramService.getProfile(igUserId, accessToken);
+    // Use /me — the OAuth user_id is app-scoped and cannot be used as a Graph node ID.
+    const profile = await instagramService.getMe(accessToken);
+
+    logOAuthStep('connectInstagramAccount:profileReady', {
+        igAccountId: profile.id,
+        oauthUserId: igUserId,
+        username: profile.username,
+        accountType: profile.account_type,
+    });
 
     const accountData = {
         account_id: profile.id,

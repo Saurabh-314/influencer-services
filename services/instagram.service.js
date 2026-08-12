@@ -266,16 +266,31 @@ class InstagramService {
     }
 
     async getMe(accessToken) {
+        logOAuthStep('getMe:start', {
+            endpoint: `${this.baseUrl}/me`,
+            method: 'GET',
+            token: describeToken(accessToken),
+        });
+
         const res = await axios.get(`${this.baseUrl}/me`, {
             params: {
-                fields: 'user_id,username,name,biography,profile_picture_url,followers_count,follows_count,media_count',
+                fields: 'user_id,id,username,name,biography,profile_picture_url,followers_count,follows_count,media_count,account_type',
                 access_token: accessToken,
             },
         });
         const profile = res.data;
+        const igAccountId = profile.user_id || profile.id;
+
+        logOAuthStep('getMe:success', {
+            httpStatus: res.status,
+            igAccountId,
+            username: profile.username,
+            accountType: profile.account_type,
+        });
+
         return {
             ...profile,
-            id: profile.user_id || profile.id,
+            id: igAccountId,
         };
     }
 
@@ -284,17 +299,31 @@ class InstagramService {
             return this.getMe(accessToken);
         }
 
-        const res = await axios.get(`${this.baseUrl}/${igAccountId}`, {
-            params: {
-                fields: 'user_id,username,name,biography,profile_picture_url,followers_count,follows_count,media_count',
-                access_token: accessToken,
-            },
-        });
-        const profile = res.data;
-        return {
-            ...profile,
-            id: profile.user_id || profile.id,
-        };
+        try {
+            const res = await axios.get(`${this.baseUrl}/${igAccountId}`, {
+                params: {
+                    fields: 'user_id,id,username,name,biography,profile_picture_url,followers_count,follows_count,media_count,account_type',
+                    access_token: accessToken,
+                },
+            });
+            const profile = res.data;
+            return {
+                ...profile,
+                id: profile.user_id || profile.id,
+            };
+        } catch (error) {
+            const metaError = sanitizeMetaError(error);
+            // OAuth user_id is app-scoped and often cannot be used as a Graph node ID.
+            // Fall back to /me, which returns the Instagram professional account ID.
+            if (metaError.code === 100) {
+                logOAuthStep('getProfile:fallbackToMe', {
+                    igAccountId,
+                    reason: metaError.message,
+                });
+                return this.getMe(accessToken);
+            }
+            throw error;
+        }
     }
 
     async getAccountInsights(igAccountId, accessToken) {
