@@ -142,10 +142,11 @@ exports.connectInstagram = async (request, reply) => {
 };
 
 exports.instagramCallback = async (request, reply) => {
+    console.log("instagramCallback", request.query);
     const { code, state, error: oauthError, error_description: errorDescription } = request.query;
     const [userId, returnTo = "accounts"] = (state || "").split("|");
     const redirectPath = getOAuthRedirectPath(returnTo);
-
+    console.log("redirectPath", redirectPath);
     if (oauthError || !code) {
         return redirectToClient(reply, redirectPath, {
             error: oauthError || 'access_denied',
