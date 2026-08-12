@@ -9,7 +9,7 @@ const {
 } = require("../utils/scoring");
 
 const instagramService = require("../services/instagram.service");
-const { sanitizeMetaError, logOAuthStep } = instagramService;
+const { sanitizeMetaError, logOAuthStep, classifyInstagramOAuthError } = instagramService;
 
 exports.getConnectedAccounts = async (request, reply) => {
     try {
@@ -80,23 +80,34 @@ function redirectToClient(reply, redirectPath, params = {}) {
     return reply.redirect(destination);
 }
 
+function describeTokenSafe(token) {
+    return {
+        present: Boolean(token),
+        length: token ? String(token).length : 0,
+    };
+}
+
 async function connectInstagramAccount(userId, code) {
-    logOAuthStep('connectInstagramAccount:start', { userId });
+    logOAuthStep('connectInstagramAccount:start', {
+        userId,
+        requestedScopes: instagramService.getOAuthScopes(),
+    });
 
     const { accessToken: shortLivedToken, userId: igUserId, permissions } =
         await instagramService.exchangeCodeForToken(code);
 
-    // Confirms the short-lived token is a valid Instagram User token before long-lived exchange.
-    await instagramService.verifyShortLivedToken(shortLivedToken);
+    logOAuthStep('connectInstagramAccount:shortLivedTokenReady', {
+        igUserId,
+        grantedPermissions: permissions,
+        token: describeTokenSafe(shortLivedToken),
+    });
 
     const { accessToken, expiresIn } =
         await instagramService.exchangeForLongLivedToken(shortLivedToken);
 
-    logOAuthStep('connectInstagramAccount:tokenReady', {
-        userId,
+    logOAuthStep('connectInstagramAccount:longLivedTokenReady', {
         igUserId,
-        permissions,
-        token: { present: Boolean(accessToken), length: String(accessToken || '').length },
+        token: describeTokenSafe(accessToken),
         expiresIn,
     });
 
@@ -104,7 +115,7 @@ async function connectInstagramAccount(userId, code) {
         ? new Date(Date.now() + expiresIn * 1000)
         : null;
 
-    const profile = await instagramService.getMe(accessToken);
+    const profile = await instagramService.getProfile(igUserId, accessToken);
 
     const accountData = {
         account_id: profile.id,
@@ -144,8 +155,10 @@ exports.connectInstagram = async (request, reply) => {
             url,
             redirect_uri: redirectUri,
             client_id: process.env.INSTAGRAM_APP_ID,
+            scopes: instagramService.getOAuthScopes(),
             setup_hint:
-                'redirect_uri and client_id must match Meta Dashboard > Instagram > API setup with Instagram login > Business login settings. Copy the Embed URL into INSTAGRAM_EMBED_URL if this keeps failing.',
+                'Use the Instagram App ID/Secret from Meta Dashboard > Instagram > API setup with Instagram login > Business login settings. '
+                + 'Only request scopes with Advanced Access approved. Set INSTAGRAM_OAUTH_SCOPES if needed.',
         });
     } catch (error) {
         reply.status(400).send({
@@ -187,9 +200,17 @@ exports.instagramCallback = async (request, reply) => {
         return redirectToClient(reply, redirectPath, { success: 'connected' });
     } catch (error) {
         const metaError = sanitizeMetaError(error);
-        logOAuthStep('instagramCallback:failed', metaError);
+        const classified = classifyInstagramOAuthError(metaError, {
+            requestedScopes: instagramService.getOAuthScopes(),
+        });
+        logOAuthStep('instagramCallback:failed', {
+            ...metaError,
+            classifiedError: classified.error,
+            requestedScopes: instagramService.getOAuthScopes(),
+        });
         return redirectToClient(reply, redirectPath, {
-            error: 'oauth_failed',
+            error: classified.error,
+            error_description: classified.error_description,
             error_code: metaError.code,
         });
     }

@@ -11,6 +11,30 @@ const GRAPH_ACCESS_TOKEN_URL = 'https://graph.instagram.com/access_token';
 const GRAPH_REFRESH_TOKEN_URL = 'https://graph.instagram.com/refresh_access_token';
 const OAUTH_SCOPES = 'instagram_business_basic,instagram_business_manage_insights';
 
+function getOAuthScopes() {
+    return process.env.INSTAGRAM_OAUTH_SCOPES?.trim() || OAUTH_SCOPES;
+}
+
+function classifyInstagramOAuthError(metaError, context = {}) {
+    if (metaError.code === 100 && metaError.type === 'IGApiException') {
+        return {
+            error: 'instagram_graph_access_denied',
+            error_description:
+                'Instagram login succeeded, but Meta rejected Graph API access for this account. '
+                + 'Your app must be Live with Advanced Access approved for every requested permission '
+                + '(instagram_business_basic, instagram_business_manage_insights), business verification '
+                + 'must be complete, and the Instagram account must be a Professional account.',
+            ...context,
+        };
+    }
+
+    return {
+        error: 'oauth_failed',
+        error_description: metaError.message || 'Instagram OAuth failed',
+        ...context,
+    };
+}
+
 function sanitizeMetaError(error) {
     const data = error?.response?.data;
     if (!data) {
@@ -116,20 +140,27 @@ class InstagramService {
         return getInstagramConfig().redirectUri;
     }
 
+    getOAuthScopes() {
+        return getOAuthScopes();
+    }
+
     getOAuthUrl(state) {
         const { embedUrl, appId, redirectUri } = getInstagramConfig();
+        const scope = getOAuthScopes();
 
         if (embedUrl) {
             const url = new URL(embedUrl);
             url.searchParams.set('state', state);
-            // Keep Meta's redirect_uri from the Embed URL — do not override it.
+            // Keep Meta's redirect_uri/client_id from the Embed URL, but restrict scopes
+            // to permissions this app actually needs and has Advanced Access for.
+            url.searchParams.set('scope', scope);
             return url.toString();
         }
 
         const params = new URLSearchParams({
             client_id: appId,
             redirect_uri: redirectUri,
-            scope: OAUTH_SCOPES,
+            scope,
             response_type: 'code',
             state,
             enable_fb_login: 'false',
@@ -173,30 +204,6 @@ class InstagramService {
         });
 
         return parsed;
-    }
-
-    async verifyShortLivedToken(shortLivedToken) {
-        logOAuthStep('verifyShortLivedToken:start', {
-            endpoint: `${this.baseUrl}/me`,
-            method: 'GET',
-            token: describeToken(shortLivedToken),
-        });
-
-        const res = await axios.get(`${this.baseUrl}/me`, {
-            params: {
-                fields: 'user_id,username,account_type',
-                access_token: shortLivedToken,
-            },
-        });
-
-        logOAuthStep('verifyShortLivedToken:success', {
-            httpStatus: res.status,
-            userId: res.data.user_id || res.data.id,
-            username: res.data.username,
-            accountType: res.data.account_type,
-        });
-
-        return res.data;
     }
 
     async exchangeForLongLivedToken(shortLivedToken) {
@@ -403,3 +410,5 @@ class InstagramService {
 module.exports = new InstagramService();
 module.exports.sanitizeMetaError = sanitizeMetaError;
 module.exports.logOAuthStep = logOAuthStep;
+module.exports.classifyInstagramOAuthError = classifyInstagramOAuthError;
+module.exports.getOAuthScopes = getOAuthScopes;
