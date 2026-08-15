@@ -6,6 +6,7 @@ const analyticsRoutes = require('./analytics.route.js');
 const accountRoutes = require('./account.route.js');
 const walletRoutes = require('./wallet.route.js');
 const uploadRoutes = require('./upload.route.js');
+const adminRoutes = require('./admin.route.js');
 
 async function apiRoutes(fastify) {
     fastify.register(authRoutes, { prefix: '/auth' });
@@ -16,6 +17,7 @@ async function apiRoutes(fastify) {
     fastify.register(accountRoutes, { prefix: '/social-accounts' });
     fastify.register(walletRoutes, { prefix: '/wallet' });
     fastify.register(uploadRoutes, { prefix: '/uploads' });
+    fastify.register(adminRoutes, { prefix: '/admin' });
 }
 
 module.exports = apiRoutes;

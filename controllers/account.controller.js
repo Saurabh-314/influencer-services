@@ -1,15 +1,12 @@
 const db = require("../models");
 const social_accounts = db.models.social_accounts;
+const instagramService = require("../services/instagram.service");
+const { syncAccountInsights, ensureValidAccessToken } = require("../services/instagramInsights.service");
+const { sanitizeMetaError, logOAuthStep, classifyInstagramOAuthError } = instagramService;
 const {
-    calculateInfluencerScore,
-    calculateAdvStats,
-    computeReelsStats,
     getMediaViews,
     getViewBucket,
 } = require("../utils/scoring");
-
-const instagramService = require("../services/instagram.service");
-const { sanitizeMetaError, logOAuthStep, classifyInstagramOAuthError } = instagramService;
 
 exports.getConnectedAccounts = async (request, reply) => {
     try {
@@ -247,24 +244,32 @@ exports.disconnectAccount = async (request, reply) => {
     }
 };
 
-async function ensureValidAccessToken(account) {
-    let accessToken = account.access_token;
-    const tokenExpiry = account.token_expiry;
-
-    if (tokenExpiry && new Date(tokenExpiry) <= new Date()) {
-        const refreshed = await instagramService.refreshLongLivedToken(accessToken);
-        accessToken = refreshed.accessToken;
-        const newExpiry = refreshed.expiresIn
-            ? new Date(Date.now() + refreshed.expiresIn * 1000)
-            : null;
-        await account.update({
-            access_token: accessToken,
-            token_expiry: newExpiry,
+exports.syncAccountData = async (request, reply) => {
+    const { id } = request.params;
+    try {
+        const account = await social_accounts.findOne({
+            where: { id, user_id: request.user.id },
         });
-    }
 
-    return accessToken;
-}
+        if (!account)
+            return reply
+                .status(404)
+                .send({ success: false, message: "Account not found" });
+
+        const data = await syncAccountInsights(account);
+
+        reply.send({
+            success: true,
+            data: {
+                ...data,
+                engagement_rate: account.engagement_rate,
+            },
+        });
+    } catch (error) {
+        console.error("Sync Account Data Error:", error.response?.data || error.message);
+        reply.status(500).send({ success: false, message: error.message });
+    }
+};
 
 exports.getAccountReels = async (request, reply) => {
     const { id } = request.params;
@@ -323,83 +328,3 @@ exports.getAccountReels = async (request, reply) => {
     }
 };
 
-exports.syncAccountData = async (request, reply) => {
-    const { id } = request.params;
-    try {
-        const account = await social_accounts.findOne({
-            where: { id, user_id: request.user.id },
-        });
-
-        if (!account)
-            return reply
-                .status(404)
-                .send({ success: false, message: "Account not found" });
-
-        const accessToken = await ensureValidAccessToken(account);
-
-        const profile = await instagramService.getProfile(
-            account.account_id,
-            accessToken,
-        );
-
-        const media = await instagramService.getMedia(
-            account.account_id,
-            accessToken,
-        );
-        console.log("media", media);
-
-        const reelsStats = computeReelsStats(media);
-        const topPosts = [...media]
-            .sort((a, b) => getMediaViews(b) - getMediaViews(a))
-            .slice(0, 8)
-            .map((m) => ({
-                id: m.id,
-                media_url: m.media_url,
-                thumbnail_url: m.thumbnail_url,
-                permalink: m.permalink,
-                like_count: m.like_count,
-                comments_count: m.comments_count,
-                timestamp: m.timestamp,
-                views: getMediaViews(m),
-            }));
-
-        const avgEngagement =
-            media.length > 0
-                ? media.reduce(
-                    (acc, m) => acc + (m.like_count + (m.comments_count || 0)),
-                    0,
-                ) / media.length
-                : 0;
-        const engagementRate =
-            profile.followers_count > 0
-                ? (avgEngagement / profile.followers_count) * 100
-                : 0;
-
-        await account.update({
-            display_name: profile.name,
-            followers_count: profile.followers_count,
-            following_count: profile.follows_count,
-            total_posts: profile.media_count,
-            engagement_rate: parseFloat(engagementRate.toFixed(2)),
-            last_synced_at: new Date(),
-        });
-
-        reply.send({
-            success: true,
-            data: {
-                profile,
-                reels_stats: reelsStats,
-                top_posts: topPosts,
-                engagement_rate: account.engagement_rate,
-                influencer_score: calculateInfluencerScore(
-                    profile.followers_count,
-                    account.engagement_rate,
-                ),
-                adv_stats: calculateAdvStats(media),
-            },
-        });
-    } catch (error) {
-        console.error("Sync Account Data Error:", error.response?.data || error.message);
-        reply.status(500).send({ success: false, message: error.message });
-    }
-};
