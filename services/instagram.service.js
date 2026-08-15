@@ -352,11 +352,14 @@ class InstagramService {
                 params: isFirstPage
                     ? {
                         fields: MEDIA_FIELDS,
+                        media_type: 'VIDEO',
                         limit: 100,
                         access_token: accessToken,
                     }
                     : {},
             });
+
+            console.log("response data", res.data);
 
             const pageReels = (res.data.data || []).filter(
                 (item) => item.media_product_type === 'REELS',
