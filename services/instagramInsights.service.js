@@ -1,9 +1,10 @@
 const instagramService = require('./instagram.service');
 const {
-    calculateInfluencerScore,
+    calculateCreatorScore,
     calculateAdvStats,
     computeReelsStats,
     getMediaViews,
+    getInsightValue,
 } = require('../utils/scoring');
 
 async function ensureValidAccessToken(account) {
@@ -33,10 +34,10 @@ async function syncAccountInsights(account) {
         accessToken,
     );
 
-    const media = await instagramService.getMedia(
-        account.account_id,
-        accessToken,
-    );
+    const [media, accountInsights] = await Promise.all([
+        instagramService.getMedia(account.account_id, accessToken),
+        instagramService.getAccountInsights(account.account_id, accessToken),
+    ]);
 
     const reelsStats = computeReelsStats(media);
     const topPosts = [...media]
@@ -44,11 +45,15 @@ async function syncAccountInsights(account) {
         .slice(0, 8)
         .map((m) => ({
             id: m.id,
+            caption: m.caption || '',
             media_url: m.media_url,
             thumbnail_url: m.thumbnail_url,
             permalink: m.permalink,
             like_count: m.like_count,
             comments_count: m.comments_count,
+            saved: getInsightValue(m, ['saved', 'saves']),
+            shares: getInsightValue(m, ['shares']),
+            reach: getInsightValue(m, ['reach']),
             timestamp: m.timestamp,
             views: getMediaViews(m),
         }));
@@ -76,15 +81,20 @@ async function syncAccountInsights(account) {
         last_synced_at: new Date(),
     });
 
+    const creatorScore = calculateCreatorScore(
+        profile,
+        media,
+        parsedEngagementRate,
+        accountInsights,
+    );
+
     return {
         profile,
         reels_stats: reelsStats,
         top_posts: topPosts,
         engagement_rate: parsedEngagementRate,
-        influencer_score: calculateInfluencerScore(
-            profile.followers_count,
-            parsedEngagementRate,
-        ),
+        influencer_score: creatorScore.overall,
+        creator_score: creatorScore,
         adv_stats: calculateAdvStats(media),
     };
 }

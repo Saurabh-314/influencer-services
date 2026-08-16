@@ -327,19 +327,31 @@ class InstagramService {
     }
 
     async getAccountInsights(igAccountId, accessToken) {
-        try {
-            const res = await axios.get(`${this.baseUrl}/${igAccountId}/insights`, {
-                params: {
-                    metric: 'reach',
-                    period: 'day',
-                    access_token: accessToken,
-                },
-            });
-            return res.data.data;
-        } catch (error) {
-            console.warn('Could not fetch account insights:', error.response?.data || error.message);
-            return [];
+        const until = Math.floor(Date.now() / 1000);
+        const since = until - 30 * 24 * 60 * 60;
+        const attempts = ['reach,follower_count', 'reach'];
+
+        for (const metric of attempts) {
+            try {
+                const res = await axios.get(`${this.baseUrl}/${igAccountId}/insights`, {
+                    params: {
+                        metric,
+                        period: 'day',
+                        since,
+                        until,
+                        access_token: accessToken,
+                    },
+                });
+                return res.data.data || [];
+            } catch (error) {
+                console.warn(
+                    `Could not fetch account insights (${metric}):`,
+                    error.response?.data || error.message,
+                );
+            }
         }
+
+        return [];
     }
 
     async getAllReels(igAccountId, accessToken) {
@@ -372,7 +384,7 @@ class InstagramService {
         return reels;
     }
 
-    async getReelsWithInsights(igAccountId, accessToken) {
+    async getReelsWithInsights(igAccountId, accessToken, metrics = 'views,reach,saved,shares') {
         let url = `${this.baseUrl}/${igAccountId}/media`;
         const reels = [];
 
@@ -383,7 +395,7 @@ class InstagramService {
                     ? {
                         // Field expansion pulls insights inline, avoiding an
                         // extra insights request per reel (N+1).
-                        fields: `${MEDIA_FIELDS},insights.metric(views)`,
+                        fields: `${MEDIA_FIELDS},insights.metric(${metrics})`,
                         limit: 100,
                         access_token: accessToken,
                     }
@@ -427,10 +439,22 @@ class InstagramService {
     }
 
     async getMedia(igAccountId, accessToken) {
+        const metricAttempts = ['views,reach,saved,shares', 'views'];
+
+        for (const metrics of metricAttempts) {
+            try {
+                return await this.getReelsWithInsights(igAccountId, accessToken, metrics);
+            } catch (err) {
+                console.warn(
+                    `getMedia with metrics ${metrics} failed:`,
+                    err.response?.data || err.message,
+                );
+            }
+        }
+
         try {
             const reels = await this.getAllReels(igAccountId, accessToken);
             if (!reels.length) return [];
-
             return this.attachReelInsights(reels, accessToken);
         } catch (err) {
             console.error(err.response?.data || err.message);
