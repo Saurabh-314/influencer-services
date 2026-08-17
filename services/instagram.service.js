@@ -402,9 +402,14 @@ class InstagramService {
             });
 
             const pageReels = (res.data.data || []).filter(
-                (item) => item.media_product_type === 'REELS',
+                (item) => {
+                    console.log('item', item);
+                    console.log('item insights', item.insights);
+                    return (
+                        item.media_product_type === 'REELS'
+                    )
+                }
             );
-            console.log('pageReels', pageReels);
             reels.push(...pageReels);
 
             url = res.data.paging?.next || null;
