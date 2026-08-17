@@ -15,6 +15,12 @@ function getOAuthScopes() {
     return process.env.INSTAGRAM_OAUTH_SCOPES?.trim() || OAUTH_SCOPES;
 }
 
+function normalizeMediaInsights(insights) {
+    if (Array.isArray(insights)) return insights;
+    if (Array.isArray(insights?.data)) return insights.data;
+    return [];
+}
+
 function classifyInstagramOAuthError(metaError, context = {}) {
     if (metaError.code === 100 && metaError.type === 'IGApiException') {
         return {
@@ -395,25 +401,19 @@ class InstagramService {
                         // Field expansion pulls insights inline, avoiding an
                         // extra insights request per reel (N+1).
                         fields: `${MEDIA_FIELDS},insights.metric(${metrics})`,
+                        media_type: 'VIDEO',
                         limit: 100,
                         access_token: accessToken,
                     }
                     : {},
             });
 
-            const pageReels = (res.data.data || []).filter(
-                (item) => {
-                    console.log('item', item);
-                    console.log('item insights', item.insights);
-                    item.insights.data.forEach(insight => {
-                        console.log('insight', insight);
-                        console.log('insight values', insight.values);
-                    });
-                    return (
-                        item.media_product_type === 'REELS'
-                    )
-                }
-            );
+            const pageReels = (res.data.data || [])
+                .filter((item) => item.media_product_type === 'REELS')
+                .map((item) => ({
+                    ...item,
+                    insights: normalizeMediaInsights(item.insights),
+                }));
             reels.push(...pageReels);
 
             url = res.data.paging?.next || null;
@@ -423,21 +423,26 @@ class InstagramService {
     }
 
     async getReelInsights(mediaId, accessToken) {
-        try {
-            const insightRes = await axios.get(`${this.baseUrl}/${mediaId}/insights`, {
-                params: {
-                    metric: 'views',
-                    access_token: accessToken,
-                },
-            });
-            return insightRes.data.data || [];
-        } catch (err) {
-            console.error(
-                `Insights error for ${mediaId}:`,
-                err.response?.data || err.message,
-            );
-            return [];
+        const metricAttempts = ['views,reach,saved,shares', 'views'];
+
+        for (const metric of metricAttempts) {
+            try {
+                const insightRes = await axios.get(`${this.baseUrl}/${mediaId}/insights`, {
+                    params: {
+                        metric,
+                        access_token: accessToken,
+                    },
+                });
+                return insightRes.data.data || [];
+            } catch (err) {
+                console.warn(
+                    `Insights error for ${mediaId} (${metric}):`,
+                    err.response?.data || err.message,
+                );
+            }
         }
+
+        return [];
     }
 
     async attachReelInsights(reels, accessToken, concurrency = 5) {

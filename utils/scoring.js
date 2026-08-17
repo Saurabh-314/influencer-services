@@ -17,18 +17,62 @@ function calculateInfluencerScore(followers, engagementRate) {
     return Math.min(100, Math.round(baseScore + engagementBoost));
 }
 
-function getMediaViews(media) {
-    // Insights can arrive as an array (per-media insights call) or nested under
-    // `insights.data` (field expansion on the media edge). Support both.
-    const insights = Array.isArray(media.insights)
-        ? media.insights
-        : media.insights?.data ?? [];
-    const viewsInsight = insights.find(
-        (i) => i.name === 'views' || i.name === 'video_views' || i.name === 'plays',
-    );
-    if (viewsInsight?.values?.[0]?.value != null) {
-        return viewsInsight.values[0].value;
+function coerceInsightNumber(value) {
+    if (value == null) return null;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (typeof value === 'string' && value.trim() !== '') {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : null;
     }
+    if (typeof value === 'object') {
+        if (value.value != null) return coerceInsightNumber(value.value);
+        if (value.count != null) return coerceInsightNumber(value.count);
+    }
+    return null;
+}
+
+function readInsightNumber(insight) {
+    if (!insight) return null;
+
+    const fromTotal = coerceInsightNumber(insight.total_value?.value ?? insight.total_value);
+    if (fromTotal != null) return fromTotal;
+
+    const values = Array.isArray(insight.values) ? insight.values : [];
+    for (let i = values.length - 1; i >= 0; i -= 1) {
+        const n = coerceInsightNumber(values[i]?.value ?? values[i]);
+        if (n != null) return n;
+    }
+
+    return coerceInsightNumber(insight.value);
+}
+
+function getMediaInsights(media) {
+    if (Array.isArray(media?.insights)) return media.insights;
+    if (Array.isArray(media?.insights?.data)) return media.insights.data;
+    return [];
+}
+
+function getInsightValue(media, names) {
+    const insights = getMediaInsights(media);
+    const nameList = Array.isArray(names) ? names : [names];
+    for (const name of nameList) {
+        const found = insights.find((i) => i?.name === name);
+        const value = readInsightNumber(found);
+        if (value != null) return value;
+    }
+    return 0;
+}
+
+function hasInsight(media, names) {
+    const insights = getMediaInsights(media);
+    const nameList = Array.isArray(names) ? names : [names];
+    return insights.some((i) => nameList.includes(i?.name));
+}
+
+function getMediaViews(media) {
+    const views = getInsightValue(media, ['views', 'video_views', 'plays']);
+    if (views > 0) return views;
+    if (hasInsight(media, ['views', 'video_views', 'plays'])) return 0;
     return (media.like_count || 0) * 10;
 }
 
@@ -100,24 +144,6 @@ function getPayoutForRank(campaign, userRank) {
 
 function clampScore(n) {
     return Math.max(0, Math.min(100, Math.round(n)));
-}
-
-function getMediaInsights(media) {
-    return Array.isArray(media?.insights)
-        ? media.insights
-        : media?.insights?.data ?? [];
-}
-
-function getInsightValue(media, names) {
-    const insights = getMediaInsights(media);
-    const nameList = Array.isArray(names) ? names : [names];
-    for (const name of nameList) {
-        const found = insights.find((i) => i.name === name);
-        if (found?.values?.[0]?.value != null) {
-            return Number(found.values[0].value) || 0;
-        }
-    }
-    return 0;
 }
 
 function sumAccountInsight(accountInsights, name) {
@@ -195,18 +221,24 @@ function calculateCreatorScore(profile, media, engagementRate, accountInsights =
     const followers = Number(profile?.followers_count) || 0;
     const reels = (media || []).filter(isReel);
     const views = reels.map((m) => getMediaViews(m));
-    const reaches = reels.map((m) => getInsightValue(m, ['reach']));
-    const saves = reels.map((m) => getInsightValue(m, ['saved', 'saves']));
-    const shares = reels.map((m) => getInsightValue(m, ['shares']));
+    const reaches = reels
+        .filter((m) => hasInsight(m, ['reach']))
+        .map((m) => getInsightValue(m, ['reach']));
+    const saves = reels
+        .filter((m) => hasInsight(m, ['saved', 'saves']))
+        .map((m) => getInsightValue(m, ['saved', 'saves']));
+    const shares = reels
+        .filter((m) => hasInsight(m, ['shares']))
+        .map((m) => getInsightValue(m, ['shares']));
     const likes = reels.map((m) => Number(m.like_count) || 0);
     const comments = reels.map((m) => Number(m.comments_count) || 0);
 
-    const hasReach = reaches.some((v) => v > 0);
-    const hasSaves = saves.some((v) => v > 0);
-    const hasShares = shares.some((v) => v > 0);
+    const hasReach = reaches.length > 0;
+    const hasSaves = saves.length > 0;
+    const hasShares = shares.length > 0;
 
     const avgViews = average(views);
-    const avgReach = hasReach ? average(reaches.filter((v) => v > 0)) : avgViews;
+    const avgReach = hasReach ? average(reaches.filter((v) => v > 0)) || average(reaches) : avgViews;
     const avgLikes = average(likes);
     const avgComments = average(comments);
     const avgSaves = average(saves);
