@@ -152,6 +152,35 @@ function sumAccountInsight(accountInsights, name) {
     return metric.values.reduce((acc, v) => acc + (Number(v.value) || 0), 0);
 }
 
+function getNonFollowerReachPct(accountInsights) {
+    const metric = (accountInsights || []).find((item) => {
+        const keys = item?.total_value?.breakdowns?.[0]?.dimension_keys || [];
+        return keys.includes('follow_type') || keys.includes('follower_type');
+    });
+
+    const breakdown = metric?.total_value?.breakdowns?.[0];
+    if (!breakdown?.results?.length) return null;
+
+    const keys = breakdown.dimension_keys || [];
+    const dimIndex = keys.includes('follow_type')
+        ? keys.indexOf('follow_type')
+        : Math.max(keys.indexOf('follower_type'), 0);
+
+    let nonFollower = 0;
+    let total = 0;
+    for (const row of breakdown.results) {
+        const value = Number(row.value) || 0;
+        total += value;
+        const label = String(row.dimension_values?.[dimIndex] ?? '').toUpperCase();
+        if (label === 'NON_FOLLOWER' || label === 'NONFOLLOWER') {
+            nonFollower += value;
+        }
+    }
+
+    if (total <= 0) return null;
+    return clampScore((nonFollower / total) * 100);
+}
+
 function average(values) {
     if (!values.length) return 0;
     return values.reduce((acc, v) => acc + v, 0) / values.length;
@@ -302,9 +331,7 @@ function calculateCreatorScore(profile, media, engagementRate, accountInsights =
         ? (newFollowers30d / priorFollowers) * 100
         : null;
 
-    const nonFollowerPct = avgReach > followers
-        ? clampScore((1 - followers / avgReach) * 100)
-        : null;
+    const nonFollowerPct = getNonFollowerReachPct(accountInsights);
 
     const adv = calculateAdvStats(reels);
     const postsPerWeek = adv?.postsPerWeek ?? 0;

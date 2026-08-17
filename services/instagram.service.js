@@ -332,32 +332,75 @@ class InstagramService {
         }
     }
 
-    async getAccountInsights(igAccountId, accessToken) {
-        const until = Math.floor(Date.now() / 1000);
-        const since = until - 30 * 24 * 60 * 60;
-        const attempts = ['reach,follower_count', 'reach'];
+    async fetchAccountInsights(igAccountId, accessToken, params) {
+        const res = await axios.get(`${this.baseUrl}/${igAccountId}/insights`, {
+            params: {
+                ...params,
+                access_token: accessToken,
+            },
+        });
+        return res.data.data || [];
+    }
 
-        for (const metric of attempts) {
+    async getReachFollowBreakdown(igAccountId, accessToken, since, until) {
+        const attempts = [
+            { metric: 'reach', breakdown: 'follow_type' },
+            { metric: 'views', breakdown: 'follower_type' },
+        ];
+
+        for (const attempt of attempts) {
             try {
-                const res = await axios.get(`${this.baseUrl}/${igAccountId}/insights`, {
-                    params: {
-                        metric,
-                        period: 'day',
-                        since,
-                        until,
-                        access_token: accessToken,
-                    },
+                const data = await this.fetchAccountInsights(igAccountId, accessToken, {
+                    metric: attempt.metric,
+                    period: 'day',
+                    metric_type: 'total_value',
+                    breakdown: attempt.breakdown,
+                    since,
+                    until,
                 });
-                return res.data.data || [];
+                const metric = data.find((item) => item?.total_value?.breakdowns?.length);
+                if (metric) return metric;
             } catch (error) {
                 console.warn(
-                    `Could not fetch account insights (${metric}):`,
+                    `Could not fetch ${attempt.metric} ${attempt.breakdown} breakdown:`,
                     error.response?.data || error.message,
                 );
             }
         }
 
-        return [];
+        return null;
+    }
+
+    async getAccountInsights(igAccountId, accessToken) {
+        const until = Math.floor(Date.now() / 1000);
+        const since = until - 30 * 24 * 60 * 60;
+        const seriesAttempts = ['reach,follower_count', 'reach'];
+
+        const seriesPromise = (async () => {
+            for (const metric of seriesAttempts) {
+                try {
+                    return await this.fetchAccountInsights(igAccountId, accessToken, {
+                        metric,
+                        period: 'day',
+                        since,
+                        until,
+                    });
+                } catch (error) {
+                    console.warn(
+                        `Could not fetch account insights (${metric}):`,
+                        error.response?.data || error.message,
+                    );
+                }
+            }
+            return [];
+        })();
+
+        const [series, followBreakdown] = await Promise.all([
+            seriesPromise,
+            this.getReachFollowBreakdown(igAccountId, accessToken, since, until),
+        ]);
+
+        return followBreakdown ? [...series, followBreakdown] : series;
     }
 
     async getAllReels(igAccountId, accessToken) {
