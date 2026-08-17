@@ -39,6 +39,9 @@ async function syncAccountInsights(account) {
         instagramService.getAccountInsights(account.account_id, accessToken),
     ]);
 
+    console.log('media', media);
+    console.log('accountInsights', accountInsights);
+
     const reelsStats = computeReelsStats(media);
     const topPosts = [...media]
         .sort((a, b) => getMediaViews(b) - getMediaViews(a))
