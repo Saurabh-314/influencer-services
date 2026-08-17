@@ -371,7 +371,6 @@ class InstagramService {
                     : {},
             });
 
-            console.log("response data", res.data);
 
             const pageReels = (res.data.data || []).filter(
                 (item) => item.media_product_type === 'REELS',
@@ -405,6 +404,7 @@ class InstagramService {
             const pageReels = (res.data.data || []).filter(
                 (item) => item.media_product_type === 'REELS',
             );
+            console.log('pageReels', pageReels);
             reels.push(...pageReels);
 
             url = res.data.paging?.next || null;
