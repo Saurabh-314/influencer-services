@@ -405,6 +405,10 @@ class InstagramService {
                 (item) => {
                     console.log('item', item);
                     console.log('item insights', item.insights);
+                    item.insights.data.forEach(insight => {
+                        console.log('insight', insight);
+                        console.log('insight values', insight.values);
+                    });
                     return (
                         item.media_product_type === 'REELS'
                     )
