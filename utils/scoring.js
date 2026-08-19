@@ -8,6 +8,7 @@ const {
 } = require('./scoringConfig');
 const {
     getInsightValue,
+    getMediaInsights,
     hasInsight,
     average,
     median,
@@ -146,6 +147,10 @@ function scoreBand(overall) {
     };
 }
 
+function mediaMetricList(reels, reader) {
+    return reels.map(reader).filter((v) => v != null);
+}
+
 function splitPeriod(reels, days = 15) {
     const now = Date.now();
     const windowMs = days * 24 * 60 * 60 * 1000;
@@ -160,8 +165,107 @@ function splitPeriod(reels, days = 15) {
     return { recent, previous };
 }
 
-function mediaMetricList(reels, reader) {
-    return reels.map(reader).filter((v) => v != null);
+function mediaInsightNames(media) {
+    const names = new Set();
+    for (const item of media || []) {
+        for (const insight of getMediaInsights(item)) {
+            if (insight?.name) names.add(insight.name);
+        }
+    }
+    return [...names];
+}
+
+function accountInsightNames(accountInsights) {
+    if (Array.isArray(accountInsights) && accountInsights[0]?.date) {
+        const names = new Set();
+        for (const row of accountInsights) {
+            for (const [key, value] of Object.entries(row)) {
+                if (key !== 'date' && value != null) names.add(key);
+            }
+        }
+        return [...names];
+    }
+    return [...new Set((accountInsights || []).map((item) => item?.name).filter(Boolean))];
+}
+
+function sampleReels(reels) {
+    return (reels || []).slice(0, 8).map((item) => ({
+        id: item.id,
+        media_type: item.media_type || null,
+        media_product_type: item.media_product_type || null,
+        timestamp: item.timestamp || null,
+        like_count: item.like_count ?? null,
+        comments_count: item.comments_count ?? null,
+        insight_names: getMediaInsights(item).map((insight) => insight?.name).filter(Boolean),
+        views: getMediaViews(item),
+        reach: getInsightValue(item, ['reach']),
+        saved: getInsightValue(item, ['saved', 'saves']),
+        shares: getInsightValue(item, ['shares']),
+    }));
+}
+
+function addGap(gaps, key, available, reason) {
+    if (available) return;
+    gaps.push({ key, available: false, reason });
+}
+
+function buildCalculationGaps({
+    profile,
+    reels,
+    usableInsights,
+    series,
+    values = {},
+    fetchError = false,
+}) {
+    const gaps = [];
+    const accountType = profile?.account_type || null;
+    if (accountType && !isProfessionalAccount(accountType)) {
+        gaps.push({
+            key: 'account_type',
+            available: false,
+            reason: `account_type=${accountType} is not a Professional Instagram account`,
+        });
+    }
+    if (fetchError) {
+        gaps.push({
+            key: 'media_fetch',
+            available: false,
+            reason: 'Instagram media/insights request failed. See diagnostics.instagram_errors.',
+        });
+    }
+    if ((reels || []).length < MIN_REELS_FOR_SCORE) {
+        gaps.push({
+            key: 'min_reels',
+            available: false,
+            reason: `Need at least ${MIN_REELS_FOR_SCORE} recent Reels, found ${(reels || []).length}`,
+            found: (reels || []).length,
+            required: MIN_REELS_FOR_SCORE,
+        });
+    }
+    if ((usableInsights || []).length === 0) {
+        gaps.push({
+            key: 'media_insights',
+            available: false,
+            reason: 'No Reel Insights (views/reach/saved/shares) were returned',
+            found: 0,
+        });
+    }
+
+    addGap(gaps, 'views', values.views != null, 'views / video_views / plays not returned on Reel Insights');
+    addGap(gaps, 'reach', values.reach != null, 'reach not returned on Reel or account Insights');
+    addGap(gaps, 'saves', values.saves != null, 'saved/saves not returned');
+    addGap(gaps, 'shares', values.shares != null, 'shares not returned');
+    addGap(gaps, 'likes', values.likes != null, 'likes not returned');
+    addGap(gaps, 'comments', values.comments != null, 'comments not returned');
+    addGap(gaps, 'weighted_er', values.weighted_er != null, 'cannot compute weighted ER without reach + interaction counts');
+    addGap(gaps, 'profile_views', values.profile_visit_rate != null, 'profile_views or account reach missing, so Profile Visit Rate was skipped');
+    addGap(gaps, 'non_follower_reach', values.non_follower_reach_pct != null, 'follow_type/follower_type breakdown was not returned');
+    addGap(gaps, 'watch_time', values.avg_watch_time != null, 'ig_reels_avg_watch_time and ig_reels_video_view_total_time were not returned');
+    addGap(gaps, 'story_performance', values.story_engagement != null, 'Story Insights are not fetched yet, weight redistributed');
+    addGap(gaps, 'follower_growth', values.follower_growth_pct != null, 'no follower snapshot history or follows metric');
+    addGap(gaps, 'impressions', (series || []).some((row) => row?.impressions != null), 'impressions is not available on this API version/account');
+
+    return gaps;
 }
 
 function buildCollectingPayload({ status, label, description, percentileLabel, profile, reels, extra = {} }) {
@@ -220,10 +324,21 @@ function calculateCreatorScore(profile, media, engagementRate, accountInsights =
     const followers = Number(profile?.followers_count) || 0;
     const accountType = profile?.account_type || options.accountType;
     const reels = (media || []).filter(isReel);
+    const fetchError = Boolean(options.fetchError);
     const usableInsights = reels.filter((item) => hasInsight(item, ['views', 'reach', 'saved', 'saves', 'shares', 'total_interactions']));
     const series = Array.isArray(accountInsights) && accountInsights[0]?.date
         ? accountInsights
         : seriesByDate(accountInsights);
+
+    const dataSummary = {
+        account_type: accountType || null,
+        followers,
+        reels_count: reels.length,
+        reels_with_insights: usableInsights.length,
+        media_insight_names: mediaInsightNames(reels),
+        account_insight_names: accountInsightNames(accountInsights),
+        sample_reels: sampleReels(reels),
+    };
 
     if (!isProfessionalAccount(accountType) && accountType) {
         return buildCollectingPayload({
@@ -233,28 +348,36 @@ function calculateCreatorScore(profile, media, engagementRate, accountInsights =
             description: 'Creator Score requires an Instagram Professional account (Business or Creator) with Insights access.',
             profile,
             reels,
-        });
-    }
-
-    if (options.fetchError) {
-        return buildCollectingPayload({
-            status: 'error',
-            label: 'Insights sync failed',
-            percentileLabel: 'Retry required',
-            description: 'An Instagram Insights request failed. Buzzooka will not recalculate the score from incomplete data.',
-            profile,
-            reels,
+            extra: {
+                calculation_gaps: buildCalculationGaps({ profile, reels, usableInsights, series }),
+                data_summary: dataSummary,
+            },
         });
     }
 
     if (reels.length < MIN_REELS_FOR_SCORE || usableInsights.length === 0) {
+        const reason = reels.length < MIN_REELS_FOR_SCORE
+            ? `Need at least ${MIN_REELS_FOR_SCORE} recent Reels, found ${reels.length}.`
+            : 'Reels were found, but none included usable Insights (views/reach/saved/shares).';
         return buildCollectingPayload({
-            status: 'collecting',
-            label: 'Collecting data',
-            percentileLabel: 'Score pending',
-            description: `Need at least ${MIN_REELS_FOR_SCORE} recent Reels plus usable Insights before publishing a mature Creator Score.`,
+            status: fetchError && !reels.length ? 'error' : 'collecting',
+            label: fetchError && !reels.length ? 'Insights sync failed' : 'Collecting data',
+            percentileLabel: fetchError && !reels.length ? 'Retry required' : 'Score pending',
+            description: fetchError && !reels.length
+                ? 'An Instagram media request failed. Check diagnostics.instagram_errors for the Meta response.'
+                : `${reason} Buzzooka will keep collecting; missing metrics are listed in calculation_gaps.`,
             profile,
             reels,
+            extra: {
+                calculation_gaps: buildCalculationGaps({
+                    profile,
+                    reels,
+                    usableInsights,
+                    series,
+                    fetchError,
+                }),
+                data_summary: dataSummary,
+            },
         });
     }
 
@@ -539,6 +662,28 @@ function calculateCreatorScore(profile, media, engagementRate, accountInsights =
             skip_rate: average(skipRates),
             followers,
         },
+        calculation_gaps: buildCalculationGaps({
+            profile,
+            reels,
+            usableInsights,
+            series,
+            fetchError: options.fetchError,
+            values: {
+                views: avgViews,
+                reach: medianReach ?? avgReach,
+                saves: saveRate,
+                shares: shareRate,
+                likes: likeRate,
+                comments: commentRate,
+                weighted_er: weightedEr,
+                profile_visit_rate: profileVisitRate,
+                non_follower_reach_pct: nonFollowerPct,
+                avg_watch_time: avgWatchTime,
+                story_engagement: storyEngagement,
+                follower_growth_pct: followerGrowthPct,
+            },
+        }),
+        data_summary: dataSummary,
     };
 }
 

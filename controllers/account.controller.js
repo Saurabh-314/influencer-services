@@ -281,8 +281,22 @@ exports.syncAccountData = async (request, reply) => {
             },
         });
     } catch (error) {
+        const meta = error.response?.data?.error || error.response?.data || {};
         console.error("Sync Account Data Error:", error.response?.data || error.message);
-        reply.status(500).send({ success: false, message: error.message });
+        reply.status(500).send({
+            success: false,
+            message: error.message,
+            diagnostics: {
+                hint: 'Instagram sync threw before a score could be built. Use instagram_errors to debug in live mode.',
+                instagram_errors: [{
+                    stage: 'account_sync',
+                    message: meta.message || error.message,
+                    type: meta.type || error.name || null,
+                    code: meta.code || error.code || null,
+                    fbtrace_id: meta.fbtrace_id || null,
+                }],
+            },
+        });
     }
 };
 
@@ -301,10 +315,11 @@ exports.getAccountReels = async (request, reply) => {
 
         const accessToken = await ensureValidAccessToken(account);
 
-        const rawReels = await instagramService.getReelsWithInsights(
+        const mediaResult = await instagramService.getMediaWithStatus(
             account.account_id,
             accessToken,
         );
+        const rawReels = mediaResult.media || [];
 
         const reels = rawReels
             .map((m) => {

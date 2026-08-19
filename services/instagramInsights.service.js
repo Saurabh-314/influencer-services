@@ -49,6 +49,58 @@ function mapTopPosts(media) {
         }));
 }
 
+function trimErrors(errors, limit = 12) {
+    return (errors || []).slice(0, limit).map((item) => ({
+        stage: item.stage || null,
+        metric: item.metric || null,
+        metrics: item.metrics || null,
+        media_id: item.media_id || null,
+        message: item.message || null,
+        type: item.type || null,
+        code: item.code || null,
+        fbtrace_id: item.fbtrace_id || null,
+    }));
+}
+
+function buildDiagnostics({
+    profile,
+    media,
+    account,
+    creatorScore,
+    mediaResult = {},
+    accountInsightsResult = {},
+}) {
+    const instagramErrors = trimErrors([
+        ...(mediaResult.errors || []),
+        ...(accountInsightsResult.errors || []),
+    ]);
+
+    return {
+        sync_ok: !mediaResult.error,
+        media: {
+            count: (media || []).length,
+            metrics_used: mediaResult.metrics_used || null,
+            error: Boolean(mediaResult.error),
+        },
+        account_insights: {
+            returned_metrics: accountInsightsResult.returned_metrics || [],
+            missing_metrics: accountInsightsResult.missing_metrics || [],
+            error: Boolean(accountInsightsResult.error),
+        },
+        score_status: creatorScore?.status || null,
+        calculation_gaps: creatorScore?.calculation_gaps || [],
+        data_summary: creatorScore?.data_summary || {
+            account_type: profile?.account_type || account?.account_type || null,
+            followers: profile?.followers_count ?? account?.followers_count ?? null,
+            reels_count: (media || []).length,
+        },
+        instagram_errors: instagramErrors,
+        hint: instagramErrors.length
+            ? 'Instagram returned the errors in instagram_errors. calculation_gaps lists score inputs that were unavailable.'
+            : 'No Instagram request errors. calculation_gaps lists score inputs that were unavailable or skipped.',
+    };
+}
+
 async function buildScorePayload(account, profile, media, accountInsightRows, rawAccountInsights, fetchError) {
     const weights = await store.getActiveWeights();
     const tier = getFollowerTier(profile.followers_count);
@@ -71,7 +123,7 @@ async function buildScorePayload(account, profile, media, accountInsightRows, ra
     );
 }
 
-function toPublicPayload({ profile, media, creatorScore, account }) {
+function toPublicPayload({ profile, media, creatorScore, account, diagnostics }) {
     const engagementRate = creatorScore.audience?.engagement_rate ?? null;
     return {
         profile,
@@ -84,10 +136,18 @@ function toPublicPayload({ profile, media, creatorScore, account }) {
         account_type: profile.account_type || account.account_type,
         eligible: isProfessionalAccount(profile.account_type || account.account_type)
             || !profile.account_type,
+        diagnostics: diagnostics || buildDiagnostics({ profile, media, account, creatorScore }),
     };
 }
 
-async function persistAndScore(account, { profile, media, rawAccountInsights, fetchError }) {
+async function persistAndScore(account, {
+    profile,
+    media,
+    rawAccountInsights,
+    fetchError,
+    mediaResult,
+    accountInsightsResult,
+}) {
     const dailyRows = seriesByDate(rawAccountInsights);
     if (!dailyRows.length) {
         dailyRows.push({ date: new Date().toISOString().slice(0, 10) });
@@ -100,31 +160,13 @@ async function persistAndScore(account, { profile, media, rawAccountInsights, fe
     const storedMedia = await store.loadStoredMedia(account.id);
     const accountInsightRows = await store.loadAccountInsightRows(account.id);
 
-    if (fetchError) {
-        const previous = await store.loadLatestScore(account.id);
-        if (previous?.payload_json && !['error', 'collecting'].includes(previous.status)) {
-            await account.update({
-                display_name: profile.name,
-                username: profile.username || account.username,
-                profile_image: profile.profile_picture_url || account.profile_image,
-                biography: profile.biography || null,
-                account_type: profile.account_type || account.account_type,
-                followers_count: profile.followers_count || 0,
-                following_count: profile.follows_count || 0,
-                total_posts: profile.media_count || 0,
-                status: 'error',
-            });
-            return previous.payload_json;
-        }
-    }
-
     const creatorScore = await buildScorePayload(
         account,
         profile,
         storedMedia.length ? storedMedia : media,
         accountInsightRows,
         rawAccountInsights,
-        fetchError,
+        fetchError && !(storedMedia.length || media.length),
     );
 
     await store.saveScore(account, creatorScore);
@@ -140,15 +182,26 @@ async function persistAndScore(account, { profile, media, rawAccountInsights, fe
         following_count: profile.follows_count || 0,
         total_posts: profile.media_count || 0,
         engagement_rate: engagementRate == null ? account.engagement_rate : engagementRate,
-        last_synced_at: fetchError ? account.last_synced_at : new Date(),
+        last_synced_at: new Date(),
         score_status: creatorScore.status,
-        status: fetchError ? 'error' : 'active',
+        status: fetchError && !media.length ? 'error' : 'active',
     });
 
-    return creatorScore;
+    return {
+        creatorScore,
+        media: storedMedia.length ? storedMedia : media,
+        diagnostics: buildDiagnostics({
+            profile,
+            media: storedMedia.length ? storedMedia : media,
+            account,
+            creatorScore,
+            mediaResult,
+            accountInsightsResult,
+        }),
+    };
 }
 
-async function payloadFromStore(account, profileOverride = null) {
+async function payloadFromStore(account, profileOverride = null, extraDiagnostics = {}) {
     const media = await store.loadStoredMedia(account.id);
     const accountInsightRows = await store.loadAccountInsightRows(account.id);
     const latestScore = await store.loadLatestScore(account.id);
@@ -164,24 +217,31 @@ async function payloadFromStore(account, profileOverride = null) {
         account_type: account.account_type,
     };
 
-    if (latestScore?.payload_json) {
-        return toPublicPayload({
+    const staleError = !latestScore?.payload_json || ['error'].includes(latestScore.status);
+    const creatorScore = staleError
+        ? await buildScorePayload(account, profile, media, accountInsightRows, [], false)
+        : latestScore.payload_json;
+
+    return toPublicPayload({
+        profile,
+        media,
+        creatorScore,
+        account,
+        diagnostics: buildDiagnostics({
             profile,
             media,
-            creatorScore: latestScore.payload_json,
             account,
-        });
-    }
-
-    const creatorScore = await buildScorePayload(account, profile, media, accountInsightRows, [], false);
-    return toPublicPayload({ profile, media, creatorScore, account });
+            creatorScore,
+            ...extraDiagnostics,
+        }),
+    });
 }
 
 async function syncAccountInsights(account, { force = false } = {}) {
     const stale = account.last_synced_at
         && Date.now() - new Date(account.last_synced_at).getTime() < SYNC_CACHE_MS;
 
-    if (!force && stale) {
+    if (!force && stale && account.score_status !== 'error') {
         return payloadFromStore(account);
     }
 
@@ -205,7 +265,13 @@ async function syncAccountInsights(account, { force = false } = {}) {
             accountType: profile.account_type,
         });
         await store.saveScore(account, creatorScore);
-        return toPublicPayload({ profile, media: [], creatorScore, account });
+        return toPublicPayload({
+            profile,
+            media: [],
+            creatorScore,
+            account,
+            diagnostics: buildDiagnostics({ profile, media: [], account, creatorScore }),
+        });
     }
 
     const [mediaResult, accountInsightsResult] = await Promise.all([
@@ -213,39 +279,24 @@ async function syncAccountInsights(account, { force = false } = {}) {
         instagramService.getAccountInsights(account.account_id, accessToken),
     ]);
 
-    const fetchError = Boolean(mediaResult.error && !mediaResult.media.length);
-    if (fetchError && mediaResult.error && !mediaResult.media.length) {
-        const previous = await store.loadLatestScore(account.id);
-        if (previous?.payload_json && previous.status !== 'error') {
-            return payloadFromStore(account, profile);
-        }
-        const creatorScore = calculateCreatorScore(profile, [], null, [], {
-            accountType: profile.account_type,
-            fetchError: true,
-        });
-        await store.saveScore(account, creatorScore);
-        await account.update({
-            biography: profile.biography || null,
-            account_type: profile.account_type || account.account_type,
-            score_status: 'error',
-            status: 'error',
-        });
-        return toPublicPayload({ profile, media: [], creatorScore, account });
-    }
+    const media = mediaResult.media || [];
+    const fetchError = Boolean(mediaResult.error && !media.length);
 
-    const creatorScore = await persistAndScore(account, {
+    const persisted = await persistAndScore(account, {
         profile,
-        media: mediaResult.media,
+        media,
         rawAccountInsights: accountInsightsResult.data || [],
         fetchError,
+        mediaResult,
+        accountInsightsResult,
     });
 
-    const storedMedia = await store.loadStoredMedia(account.id);
     return toPublicPayload({
         profile,
-        media: storedMedia.length ? storedMedia : mediaResult.media,
-        creatorScore,
+        media: persisted.media,
+        creatorScore: persisted.creatorScore,
         account,
+        diagnostics: persisted.diagnostics,
     });
 }
 
