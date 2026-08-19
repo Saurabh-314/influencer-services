@@ -15,7 +15,6 @@ const ACCOUNT_INSIGHT_METRICS = [
     'saves',
     'follower_count',
     'follows_and_unfollows',
-    'impressions',
 ];
 
 const REEL_INSIGHT_METRIC_GROUPS = [
@@ -404,7 +403,8 @@ class InstagramService {
             || message.includes('unsupported')
             || message.includes('not available')
             || message.includes('nonexisting field')
-            || message.includes('reduce the amount of data');
+            || message.includes('reduce the amount of data')
+            || message.includes('must be one of the following');
     }
 
     isAuthOrRateLimitError(error) {
@@ -443,10 +443,12 @@ class InstagramService {
                     const metricMeta = sanitizeMetaError(metricError);
                     missing_metrics.push(metric);
                     errors.push({ stage: 'account_insights_metric', metric, ...metricMeta });
-                    console.warn(
-                        `Could not fetch account insights (${metric}):`,
-                        metricError.response?.data || metricError.message,
-                    );
+                    if (!this.isUnsupportedMetricError(metricError)) {
+                        console.warn(
+                            `Could not fetch account insights (${metric}):`,
+                            metricError.response?.data || metricError.message,
+                        );
+                    }
                 }
             }
         }

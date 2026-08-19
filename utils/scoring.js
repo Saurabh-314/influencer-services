@@ -263,7 +263,6 @@ function buildCalculationGaps({
     addGap(gaps, 'watch_time', values.avg_watch_time != null, 'ig_reels_avg_watch_time and ig_reels_video_view_total_time were not returned');
     addGap(gaps, 'story_performance', values.story_engagement != null, 'Story Insights are not fetched yet, weight redistributed');
     addGap(gaps, 'follower_growth', values.follower_growth_pct != null, 'no follower snapshot history or follows metric');
-    addGap(gaps, 'impressions', (series || []).some((row) => row?.impressions != null), 'impressions is not available on this API version/account');
 
     return gaps;
 }
