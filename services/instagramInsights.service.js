@@ -57,7 +57,7 @@ function mapTopPosts(media) {
 }
 
 function trimErrors(errors, limit = 12) {
-    return (errors || []).slice(0, limit).map((item) => ({
+        return (errors || []).slice(0, limit).map((item) => ({
         stage: item.stage || null,
         metric: item.metric || null,
         metrics: item.metrics || null,
@@ -65,6 +65,9 @@ function trimErrors(errors, limit = 12) {
         message: item.message || null,
         type: item.type || null,
         code: item.code || null,
+        error_subcode: item.error_subcode || null,
+        reason: item.reason || null,
+        skipped: item.skipped || null,
         fbtrace_id: item.fbtrace_id || null,
     }));
 }
@@ -103,9 +106,11 @@ function buildDiagnostics({
             reels_count: (media || []).length,
         },
         instagram_errors: instagramErrors,
-        hint: instagramErrors.length
-            ? 'Instagram returned the errors in instagram_errors. calculation_gaps lists score inputs that were unavailable.'
-            : 'No Instagram request errors. calculation_gaps lists score inputs that were unavailable or skipped.',
+        hint: instagramErrors.some((item) => item.reason === 'pre_professional_conversion' || item.error_subcode === 2108006)
+            ? 'Some posts were published before this account became Professional, so Instagram cannot return Insights (views/reach) for them. Those posts are still stored; the score uses posts that do have Insights, plus like/comment counts from media metadata.'
+            : instagramErrors.length
+                ? 'Instagram returned the errors in instagram_errors. calculation_gaps lists score inputs that were unavailable.'
+                : 'No Instagram request errors. calculation_gaps lists score inputs that were unavailable or skipped.',
     };
 }
 
@@ -281,6 +286,7 @@ async function syncAccountInsights(account, { force = false } = {}) {
         const creatorScore = calculateCreatorScore(profile, [], null, [], {
             accountType: profile.account_type,
         });
+
         await store.saveScore(account, creatorScore);
         return toPublicPayload({
             profile,

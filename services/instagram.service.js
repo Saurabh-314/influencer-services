@@ -2,7 +2,7 @@ const axios = require('axios');
 
 const MEDIA_FIELDS = 'id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count';
 const API_VERSION = 'v21.0';
-const { MEDIA_LOOKBACK_DAYS, ACCOUNT_INSIGHT_DAYS } = require('../utils/scoringConfig');
+const { ACCOUNT_INSIGHT_DAYS } = require('../utils/scoringConfig');
 
 const ACCOUNT_INSIGHT_METRICS = [
     'reach',
@@ -18,7 +18,7 @@ const ACCOUNT_INSIGHT_METRICS = [
 ];
 
 const REEL_INSIGHT_METRIC_GROUPS = [
-    'views,reach,saved,shares,likes,comments,total_interactions,ig_reels_avg_watch_time,ig_reels_video_view_total_time,clips_replays_count,reels_skip_rate',
+    'views,reach,saved,shares,likes,comments,total_interactions,ig_reels_avg_watch_time,ig_reels_video_view_total_time,reels_skip_rate',
     'views,reach,saved,shares,likes,comments,total_interactions,ig_reels_avg_watch_time,ig_reels_video_view_total_time',
     'views,reach,saved,shares,likes,comments,total_interactions',
     'views,reach,saved,shares',
@@ -74,6 +74,7 @@ function sanitizeMetaError(error) {
             message: data.error.message,
             type: data.error.type,
             code: data.error.code,
+            error_subcode: data.error.error_subcode,
             fbtrace_id: data.error.fbtrace_id,
         };
     }
@@ -412,6 +413,16 @@ class InstagramService {
         return [4, 17, 32, 190, 803, 80004].includes(meta.code);
     }
 
+    // Meta never returns Insights for media posted while the account was still Personal.
+    // error_subcode 2108006 — retrying other metric groups cannot succeed.
+    isInsightsUnavailableError(error) {
+        const meta = error?.response ? sanitizeMetaError(error) : (error || {});
+        if (Number(meta.error_subcode) === 2108006) return true;
+        const message = String(meta.message || '').toLowerCase();
+        return message.includes('personal account')
+            && (message.includes('business') || message.includes('professional') || message.includes('convert'));
+    }
+
     async getAccountInsights(igAccountId, accessToken) {
         const until = Math.floor(Date.now() / 1000);
         const since = until - ACCOUNT_INSIGHT_DAYS * 24 * 60 * 60;
@@ -474,15 +485,6 @@ class InstagramService {
         };
     }
 
-    isOlderThanLookback(item) {
-        if (!item?.timestamp) return false;
-        return Date.now() - new Date(item.timestamp).getTime() > MEDIA_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
-    }
-
-    withinLookback(item) {
-        return !this.isOlderThanLookback(item);
-    }
-
     isVideoOrReel(item) {
         const product = String(item?.media_product_type || '').toUpperCase();
         const type = String(item?.media_type || '').toUpperCase();
@@ -506,7 +508,8 @@ class InstagramService {
         let url = `${this.baseUrl}/${igAccountId}/media`;
         const items = [];
         let pages = 0;
-        const maxPages = 10;
+        // Instagram returns at most ~10k media objects; 100 pages * 100 items covers that cap.
+        const maxPages = 100;
 
         while (url && pages < maxPages) {
             const isFirstPage = pages === 0;
@@ -522,9 +525,8 @@ class InstagramService {
                         : {},
                 });
                 const pageItems = res.data.data || [];
-                items.push(...pageItems.filter((item) => this.withinLookback(item)));
-                const reachedLookback = pageItems.some((item) => this.isOlderThanLookback(item));
-                url = reachedLookback ? null : (res.data.paging?.next || null);
+                items.push(...pageItems);
+                url = res.data.paging?.next || null;
                 pages += 1;
                 if (!pageItems.length) break;
             } catch (err) {
@@ -582,10 +584,26 @@ class InstagramService {
             } catch (err) {
                 const meta = sanitizeMetaError(err);
                 errors.push({ stage: 'reel_insights', media_id: mediaId, metrics: metric, ...meta });
-                console.warn(
-                    `Insights error for ${mediaId} (${metric}):`,
-                    err.response?.data || err.message,
-                );
+
+                if (this.isInsightsUnavailableError(err)) {
+                    return {
+                        data: [],
+                        error: false,
+                        skipped: 'pre_professional_conversion',
+                        errors: errors.slice(0, 1),
+                    };
+                }
+
+                if (this.isAuthOrRateLimitError(err)) {
+                    return { data: [], error: true, skipped: 'auth_or_rate_limit', errors: errors.slice(0, 1) };
+                }
+
+                if (!this.isUnsupportedMetricError(err)) {
+                    console.warn(
+                        `Insights error for ${mediaId} (${metric}):`,
+                        err.response?.data || err.message,
+                    );
+                }
             }
         }
 
@@ -594,12 +612,31 @@ class InstagramService {
 
     async attachReelInsights(reels, accessToken, concurrency = 5) {
         const errors = [];
+        let skippedPreConversion = 0;
         const items = await mapWithConcurrency(reels, async (item) => {
             const result = await this.getReelInsights(item.id, accessToken);
+            if (result.skipped === 'pre_professional_conversion') {
+                skippedPreConversion += 1;
+                return { ...item, insights: [] };
+            }
             if (result.errors?.length) errors.push(...result.errors.slice(0, 3));
             return { ...item, insights: result.data };
         }, concurrency);
-        return { media: items, error: false, errors };
+
+        if (skippedPreConversion) {
+            errors.unshift({
+                stage: 'reel_insights',
+                reason: 'pre_professional_conversion',
+                skipped: skippedPreConversion,
+                code: 100,
+                error_subcode: 2108006,
+                message:
+                    'Insights are not available for media posted before the account converted from Personal to Professional. '
+                    + 'Those posts are still saved (likes/comments/permalink); views/reach cannot be fetched from Instagram.',
+            });
+        }
+
+        return { media: items, error: false, errors, skipped_pre_conversion: skippedPreConversion };
     }
 
     async getMedia(igAccountId, accessToken) {
@@ -628,12 +665,16 @@ class InstagramService {
         }
 
         const attached = await this.attachReelInsights(reels, accessToken);
+        const combined = [...attached.media, ...other];
         return {
-            media: [...attached.media, ...other],
+            media: combined,
             error: false,
             errors: [...errors, ...(attached.errors || [])],
             metrics_used: 'metadata_then_reel_insights',
-            summary: this.summarizeMedia([...attached.media, ...other]),
+            summary: {
+                ...this.summarizeMedia(combined),
+                insights_skipped_pre_conversion: attached.skipped_pre_conversion || 0,
+            },
         };
     }
 }
