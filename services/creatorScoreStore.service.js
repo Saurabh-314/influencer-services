@@ -204,7 +204,10 @@ async function loadStoredMedia(accountId, days = 90) {
     const rows = await creator_media.findAll({
         where: {
             social_account_id: accountId,
-            published_at: { [Op.gte]: cutoff },
+            [Op.or]: [
+                { published_at: { [Op.gte]: cutoff } },
+                { published_at: null },
+            ],
         },
         include: [{
             model: creator_media_insights,
@@ -214,6 +217,7 @@ async function loadStoredMedia(accountId, days = 90) {
             order: [['insight_date', 'DESC']],
         }],
         order: [['published_at', 'DESC']],
+        limit: 100,
     });
 
     return rows.map((row) => {

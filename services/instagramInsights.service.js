@@ -1,3 +1,4 @@
+const db = require('../models');
 const instagramService = require('./instagram.service');
 const {
     calculateCreatorScore,
@@ -31,11 +32,17 @@ async function ensureValidAccessToken(account) {
 
 function mapTopPosts(media) {
     return [...(media || [])]
-        .sort((a, b) => (getMediaViews(b) || 0) - (getMediaViews(a) || 0))
+        .sort((a, b) => {
+            const aRank = getMediaViews(a) || a.like_count || 0;
+            const bRank = getMediaViews(b) || b.like_count || 0;
+            return bRank - aRank;
+        })
         .slice(0, 8)
         .map((item) => ({
             id: item.id,
             caption: item.caption || '',
+            media_type: item.media_type,
+            media_product_type: item.media_product_type,
             media_url: item.media_url,
             thumbnail_url: item.thumbnail_url,
             permalink: item.permalink,
@@ -81,6 +88,7 @@ function buildDiagnostics({
             count: (media || []).length,
             metrics_used: mediaResult.metrics_used || null,
             error: Boolean(mediaResult.error),
+            summary: mediaResult.summary || null,
         },
         account_insights: {
             returned_metrics: accountInsightsResult.returned_metrics || [],
@@ -171,6 +179,13 @@ async function persistAndScore(account, {
 
     await store.saveScore(account, creatorScore);
 
+    if (profile.profile_picture_url) {
+        await db.models.users.update(
+            { profile_image: profile.profile_picture_url },
+            { where: { id: account.user_id } },
+        );
+    }
+
     const engagementRate = creatorScore.audience?.engagement_rate;
     await account.update({
         display_name: profile.name,
@@ -240,8 +255,10 @@ async function payloadFromStore(account, profileOverride = null, extraDiagnostic
 async function syncAccountInsights(account, { force = false } = {}) {
     const stale = account.last_synced_at
         && Date.now() - new Date(account.last_synced_at).getTime() < SYNC_CACHE_MS;
+    const storedMedia = (!force && stale) ? await store.loadStoredMedia(account.id) : [];
+    const shouldRetryEmptyMedia = account.total_posts > 0 && storedMedia.length === 0;
 
-    if (!force && stale && account.score_status !== 'error') {
+    if (!force && stale && account.score_status !== 'error' && !shouldRetryEmptyMedia) {
         return payloadFromStore(account);
     }
 

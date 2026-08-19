@@ -481,67 +481,89 @@ class InstagramService {
         return !this.isOlderThanLookback(item);
     }
 
-    async getAllReels(igAccountId, accessToken) {
+    isVideoOrReel(item) {
+        const product = String(item?.media_product_type || '').toUpperCase();
+        const type = String(item?.media_type || '').toUpperCase();
+        return product === 'REELS' || type === 'REELS' || type === 'VIDEO';
+    }
+
+    summarizeMedia(items) {
+        const types = {};
+        for (const item of items || []) {
+            const key = item.media_product_type || item.media_type || 'UNKNOWN';
+            types[key] = (types[key] || 0) + 1;
+        }
+        return {
+            count: (items || []).length,
+            types,
+            reels_or_video: (items || []).filter((item) => this.isVideoOrReel(item)).length,
+        };
+    }
+
+    async paginateMedia(igAccountId, accessToken, extraParams = {}, errors = []) {
         let url = `${this.baseUrl}/${igAccountId}/media`;
-        const reels = [];
+        const items = [];
+        let pages = 0;
+        const maxPages = 10;
 
-        while (url) {
-            const isFirstPage = url === `${this.baseUrl}/${igAccountId}/media`;
-            const res = await axios.get(url, {
-                params: isFirstPage
-                    ? {
-                        fields: MEDIA_FIELDS,
-                        media_type: 'VIDEO',
-                        limit: 100,
-                        access_token: accessToken,
-                    }
-                    : {},
-            });
-
-            const pageItems = res.data.data || [];
-            const pageReels = pageItems.filter(
-                (item) => item.media_product_type === 'REELS' && this.withinLookback(item),
-            );
-            reels.push(...pageReels);
-
-            const reachedLookback = pageItems.some((item) => this.isOlderThanLookback(item));
-            url = reachedLookback ? null : (res.data.paging?.next || null);
+        while (url && pages < maxPages) {
+            const isFirstPage = pages === 0;
+            try {
+                const res = await axios.get(url, {
+                    params: isFirstPage
+                        ? {
+                            fields: MEDIA_FIELDS,
+                            limit: 100,
+                            access_token: accessToken,
+                            ...extraParams,
+                        }
+                        : {},
+                });
+                const pageItems = res.data.data || [];
+                items.push(...pageItems.filter((item) => this.withinLookback(item)));
+                const reachedLookback = pageItems.some((item) => this.isOlderThanLookback(item));
+                url = reachedLookback ? null : (res.data.paging?.next || null);
+                pages += 1;
+                if (!pageItems.length) break;
+            } catch (err) {
+                errors.push({
+                    stage: 'paginate_media',
+                    node: igAccountId,
+                    extra: extraParams,
+                    ...sanitizeMetaError(err),
+                });
+                break;
+            }
         }
 
-        return reels;
+        return items;
+    }
+
+    async getAllMedia(igAccountId, accessToken, errors = []) {
+        const attempts = [
+            { node: igAccountId, extra: {} },
+            { node: igAccountId, extra: { media_type: 'REELS' } },
+            { node: 'me', extra: {} },
+        ];
+        let best = [];
+
+        for (const attempt of attempts) {
+            const items = await this.paginateMedia(attempt.node, accessToken, attempt.extra, errors);
+            if (items.length > best.length) best = items;
+            if (best.length) break;
+        }
+
+        return best;
+    }
+
+    async getAllReels(igAccountId, accessToken) {
+        const media = await this.getAllMedia(igAccountId, accessToken);
+        return media.filter((item) => this.isVideoOrReel(item));
     }
 
     async getReelsWithInsights(igAccountId, accessToken, metrics = REEL_INSIGHT_METRIC_GROUPS[3]) {
-        let url = `${this.baseUrl}/${igAccountId}/media`;
-        const reels = [];
-
-        while (url) {
-            const isFirstPage = url === `${this.baseUrl}/${igAccountId}/media`;
-            const res = await axios.get(url, {
-                params: isFirstPage
-                    ? {
-                        fields: `${MEDIA_FIELDS},insights.metric(${metrics})`,
-                        media_type: 'VIDEO',
-                        limit: 100,
-                        access_token: accessToken,
-                    }
-                    : {},
-            });
-
-            const pageItems = res.data.data || [];
-            const pageReels = pageItems
-                .filter((item) => item.media_product_type === 'REELS' && this.withinLookback(item))
-                .map((item) => ({
-                    ...item,
-                    insights: normalizeMediaInsights(item.insights),
-                }));
-            reels.push(...pageReels);
-
-            const reachedLookback = pageItems.some((item) => this.isOlderThanLookback(item));
-            url = reachedLookback ? null : (res.data.paging?.next || null);
-        }
-
-        return reels;
+        const reels = await this.getAllReels(igAccountId, accessToken);
+        return reels.map((item) => ({ ...item, insights: normalizeMediaInsights(item.insights) }));
     }
 
     async getReelInsights(mediaId, accessToken) {
@@ -588,37 +610,29 @@ class InstagramService {
 
     async getMediaWithStatus(igAccountId, accessToken) {
         const errors = [];
+        const media = await this.getAllMedia(igAccountId, accessToken, errors);
+        const summary = this.summarizeMedia(media);
+        const reels = media.filter((item) => this.isVideoOrReel(item));
+        const other = media.filter((item) => !this.isVideoOrReel(item));
 
-        for (const metrics of REEL_INSIGHT_METRIC_GROUPS) {
-            try {
-                const media = await this.getReelsWithInsights(igAccountId, accessToken, metrics);
-                return { media, error: false, errors, metrics_used: metrics };
-            } catch (err) {
-                const meta = sanitizeMetaError(err);
-                errors.push({ stage: 'reels_with_insights', metrics, ...meta });
-                console.warn(
-                    `getMedia with metrics ${metrics} failed:`,
-                    err.response?.data || err.message,
-                );
-            }
-        }
-
-        try {
-            const reels = await this.getAllReels(igAccountId, accessToken);
-            if (!reels.length) return { media: [], error: false, errors, metrics_used: null };
-            const attached = await this.attachReelInsights(reels, accessToken);
+        if (!reels.length) {
             return {
-                media: attached.media,
+                media,
                 error: false,
-                errors: [...errors, ...(attached.errors || [])],
-                metrics_used: 'per_media_fallback',
+                errors,
+                metrics_used: 'all_media_metadata',
+                summary,
             };
-        } catch (err) {
-            const meta = sanitizeMetaError(err);
-            errors.push({ stage: 'get_all_reels', ...meta });
-            console.error(err.response?.data || err.message);
-            return { media: [], error: true, errors, metrics_used: null };
         }
+
+        const attached = await this.attachReelInsights(reels, accessToken);
+        return {
+            media: [...attached.media, ...other],
+            error: false,
+            errors: [...errors, ...(attached.errors || [])],
+            metrics_used: 'metadata_then_reel_insights',
+            summary: this.summarizeMedia([...attached.media, ...other]),
+        };
     }
 }
 
