@@ -65,7 +65,7 @@ module.exports = (sequelize, DataTypes) => {
             allowNull: false,
         },
         profile_image: {
-            type: DataTypes.STRING,
+            type: DataTypes.TEXT,
             allowNull: true,
         },
         role: {

@@ -23,7 +23,7 @@ module.exports = {
                 allowNull: false,
             },
             profile_image: {
-                type: Sequelize.STRING,
+                type: Sequelize.TEXT,
                 allowNull: true,
             },
             role: {

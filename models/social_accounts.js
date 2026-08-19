@@ -53,7 +53,7 @@ module.exports = (sequelize, DataTypes) => {
         account_id: { type: DataTypes.STRING, allowNull: true },
         username: { type: DataTypes.STRING, allowNull: false },
         display_name: { type: DataTypes.STRING, allowNull: true },
-        profile_image: { type: DataTypes.STRING, allowNull: true },
+        profile_image: { type: DataTypes.TEXT, allowNull: true },
         biography: { type: DataTypes.TEXT, allowNull: true },
         account_type: { type: DataTypes.STRING, allowNull: true },
         followers_count: { type: DataTypes.INTEGER, defaultValue: 0 },

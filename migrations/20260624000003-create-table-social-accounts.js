@@ -20,7 +20,7 @@ module.exports = {
             account_id: { type: Sequelize.STRING, allowNull: true },
             username: { type: Sequelize.STRING, allowNull: false },
             display_name: { type: Sequelize.STRING, allowNull: true },
-            profile_image: { type: Sequelize.STRING, allowNull: true },
+            profile_image: { type: Sequelize.TEXT, allowNull: true },
             followers_count: { type: Sequelize.INTEGER, defaultValue: 0 },
             following_count: { type: Sequelize.INTEGER, defaultValue: 0 },
             subscribers_count: { type: Sequelize.INTEGER, defaultValue: 0 },
