@@ -11,6 +11,7 @@ const fastify = require('fastify')({
 });
 const path = require('path');
 const { startPayoutReleaseJob } = require('./jobs/releasePayouts');
+const { startCreatorInsightsSyncJob } = require('./jobs/syncCreatorInsights');
 
 const corsOrigins = new Set([
     'https://app.melotap.com',
@@ -94,6 +95,7 @@ const start = async () => {
         await fastify.listen({ port: PORT, host: '0.0.0.0' });
         console.log(`Server is running on port ${PORT}`);
         startPayoutReleaseJob(fastify.log);
+        startCreatorInsightsSyncJob(fastify.log);
     } catch (err) {
         fastify.log.error(err);
         process.exit(1);

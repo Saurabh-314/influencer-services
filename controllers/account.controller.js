@@ -126,6 +126,9 @@ async function connectInstagramAccount(userId, code) {
         account_id: profile.id,
         username: profile.username,
         display_name: profile.name,
+        profile_image: profile.profile_picture_url || null,
+        biography: profile.biography || null,
+        account_type: profile.account_type || null,
         followers_count: profile.followers_count || 0,
         following_count: profile.follows_count || 0,
         total_posts: profile.media_count || 0,
@@ -134,7 +137,9 @@ async function connectInstagramAccount(userId, code) {
         token_expiry: tokenExpiry,
         is_connected: true,
         status: "active",
-        last_synced_at: new Date(),
+        connected_at: new Date(),
+        last_synced_at: null,
+        score_status: "collecting",
     };
 
     const [account, created] = await social_accounts.findOrCreate({
@@ -143,8 +148,18 @@ async function connectInstagramAccount(userId, code) {
     });
 
     if (!created) {
-        await account.update(accountData);
+        await account.update({
+            ...accountData,
+            connected_at: account.connected_at || accountData.connected_at,
+        });
     }
+
+    syncAccountInsights(account, { force: true }).catch((error) => {
+        logOAuthStep('connectInstagramAccount:initialSyncFailed', {
+            accountId: account.id,
+            message: error.message,
+        });
+    });
 
     return account;
 }

@@ -1,82 +1,37 @@
-/**
- * Calculate Influencer Score based on followers and engagement rate
- * @param {number} followers 
- * @param {number} engagementRate 
- * @returns {number} Score from 0 to 100
- */
-function calculateInfluencerScore(followers, engagementRate) {
-    // Basic logic: Logarithmic base score from followers + multiplier for engagement
-    // 10k followers = ~40 points
-    // 100k followers = ~50 points
-    // 1M followers = ~60 points
-    const baseScore = Math.log10(followers || 1) * 10; 
-
-    // Engagement rate (e.g., 3.2%) adds up to 40 points
-    const engagementBoost = (engagementRate || 0) * 8;
-
-    return Math.min(100, Math.round(baseScore + engagementBoost));
-}
-
-function coerceInsightNumber(value) {
-    if (value == null) return null;
-    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-    if (typeof value === 'string' && value.trim() !== '') {
-        const n = Number(value);
-        return Number.isFinite(n) ? n : null;
-    }
-    if (typeof value === 'object') {
-        if (value.value != null) return coerceInsightNumber(value.value);
-        if (value.count != null) return coerceInsightNumber(value.count);
-    }
-    return null;
-}
-
-function readInsightNumber(insight) {
-    if (!insight) return null;
-
-    const fromTotal = coerceInsightNumber(insight.total_value?.value ?? insight.total_value);
-    if (fromTotal != null) return fromTotal;
-
-    const values = Array.isArray(insight.values) ? insight.values : [];
-    for (let i = values.length - 1; i >= 0; i -= 1) {
-        const n = coerceInsightNumber(values[i]?.value ?? values[i]);
-        if (n != null) return n;
-    }
-
-    return coerceInsightNumber(insight.value);
-}
-
-function getMediaInsights(media) {
-    if (Array.isArray(media?.insights)) return media.insights;
-    if (Array.isArray(media?.insights?.data)) return media.insights.data;
-    return [];
-}
-
-function getInsightValue(media, names) {
-    const insights = getMediaInsights(media);
-    const nameList = Array.isArray(names) ? names : [names];
-    for (const name of nameList) {
-        const found = insights.find((i) => i?.name === name);
-        const value = readInsightNumber(found);
-        if (value != null) return value;
-    }
-    return 0;
-}
-
-function hasInsight(media, names) {
-    const insights = getMediaInsights(media);
-    const nameList = Array.isArray(names) ? names : [names];
-    return insights.some((i) => nameList.includes(i?.name));
-}
+const {
+    SCORE_VERSION,
+    MIN_REELS_FOR_SCORE,
+    getFollowerTier,
+    isProfessionalAccount,
+    mergeWeights,
+    DEFAULT_WEIGHTS,
+} = require('./scoringConfig');
+const {
+    getInsightValue,
+    hasInsight,
+    average,
+    median,
+    stdev,
+    rate,
+    clampScore,
+    weightedAverage,
+    logisticScore,
+    metricScore,
+    blendOutliers,
+    isReel,
+    getNonFollowerReachPct,
+    seriesByDate,
+    sumSeriesMetric,
+    changeLabel,
+    growthRate,
+} = require('./metrics');
 
 function getMediaViews(media) {
-    const views = getInsightValue(media, ['views', 'video_views', 'plays']);
-    if (views > 0) return views;
-    if (hasInsight(media, ['views', 'video_views', 'plays'])) return 0;
-    return (media.like_count || 0) * 10;
+    return getInsightValue(media, ['views', 'video_views', 'plays']);
 }
 
 function getViewBucket(views) {
+    if (views == null) return 'unknown';
     if (views >= 10_000_000) return '>10m';
     if (views >= 1_000_000) return '>1m';
     if (views >= 100_000) return '>100k';
@@ -86,18 +41,20 @@ function getViewBucket(views) {
 }
 
 function computeReelsStats(media) {
-    const reels = media.filter(
-        (m) => m.media_product_type === 'REELS' || m.media_type === 'REELS' || m.media_type === 'VIDEO',
-    );
-    const stats = { total: reels.length, '>1k': 0, '>10k': 0, '>100k': 0, '>1m': 0, '>10m': 0 };
+    const reels = (media || []).filter(isReel);
+    const stats = { total: reels.length, '>1k': 0, '>10k': 0, '>100k': 0, '>1m': 0, '>10m': 0, unknown: 0 };
 
     reels.forEach((item) => {
         const views = getMediaViews(item);
-        if (views >= 10_000_000) stats['>10m']++;
-        else if (views >= 1_000_000) stats['>1m']++;
-        else if (views >= 100_000) stats['>100k']++;
-        else if (views >= 10_000) stats['>10k']++;
-        else if (views >= 1_000) stats['>1k']++;
+        if (views == null) {
+            stats.unknown += 1;
+            return;
+        }
+        if (views >= 10_000_000) stats['>10m'] += 1;
+        else if (views >= 1_000_000) stats['>1m'] += 1;
+        else if (views >= 100_000) stats['>100k'] += 1;
+        else if (views >= 10_000) stats['>10k'] += 1;
+        else if (views >= 1_000) stats['>1k'] += 1;
     });
 
     return stats;
@@ -106,24 +63,28 @@ function computeReelsStats(media) {
 function calculateAdvStats(media) {
     if (!media || media.length === 0) return null;
 
-    const totalLikes = media.reduce((acc, m) => acc + (m.like_count || 0), 0);
-    const totalComments = media.reduce((acc, m) => acc + (m.comments_count || 0), 0);
+    const likes = media.map((m) => (m.like_count == null ? null : Number(m.like_count)));
+    const comments = media.map((m) => (m.comments_count == null ? null : Number(m.comments_count)));
+    const avgLikes = average(likes);
+    const avgComments = average(comments);
 
-    const avgLikes = totalLikes / media.length;
-    const avgComments = totalComments / media.length;
-
-    // Simplified frequency calculation
-    const now = new Date();
-    const thirtyDaysAgo = new Date(now.setDate(now.getDate() - 30));
-    const recentMedia = media.filter(m => new Date(m.timestamp) > thirtyDaysAgo);
+    const now = Date.now();
+    const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
+    const recentMedia = media.filter((m) => m.timestamp && new Date(m.timestamp).getTime() > thirtyDaysAgo);
     const postsPerDay = recentMedia.length / 30;
 
     return {
-        avgLikes: Math.round(avgLikes),
-        avgComments: parseFloat(avgComments.toFixed(2)),
+        avgLikes: avgLikes == null ? null : Math.round(avgLikes),
+        avgComments: avgComments == null ? null : parseFloat(avgComments.toFixed(2)),
         postsPerDay: parseFloat(postsPerDay.toFixed(2)),
-        postsPerWeek: parseFloat((postsPerDay * 7).toFixed(2))
+        postsPerWeek: parseFloat((postsPerDay * 7).toFixed(2)),
     };
+}
+
+function calculateInfluencerScore(followers, engagementRate) {
+    const baseScore = Math.log10(followers || 1) * 10;
+    const engagementBoost = (engagementRate || 0) * 8;
+    return Math.min(100, Math.round(baseScore + engagementBoost));
 }
 
 function getVusicRank(followers) {
@@ -142,64 +103,14 @@ function getPayoutForRank(campaign, userRank) {
     return Number(allocation?.payout ?? 0);
 }
 
-function clampScore(n) {
-    return Math.max(0, Math.min(100, Math.round(n)));
-}
-
-function sumAccountInsight(accountInsights, name) {
-    const metric = (accountInsights || []).find((i) => i.name === name);
-    if (!metric?.values?.length) return 0;
-    return metric.values.reduce((acc, v) => acc + (Number(v.value) || 0), 0);
-}
-
-function getNonFollowerReachPct(accountInsights) {
-    const metric = (accountInsights || []).find((item) => {
-        const keys = item?.total_value?.breakdowns?.[0]?.dimension_keys || [];
-        return keys.includes('follow_type') || keys.includes('follower_type');
-    });
-
-    const breakdown = metric?.total_value?.breakdowns?.[0];
-    if (!breakdown?.results?.length) return null;
-
-    const keys = breakdown.dimension_keys || [];
-    const dimIndex = keys.includes('follow_type')
-        ? keys.indexOf('follow_type')
-        : Math.max(keys.indexOf('follower_type'), 0);
-
-    let nonFollower = 0;
-    let total = 0;
-    for (const row of breakdown.results) {
-        const value = Number(row.value) || 0;
-        total += value;
-        const label = String(row.dimension_values?.[dimIndex] ?? '').toUpperCase();
-        if (label === 'NON_FOLLOWER' || label === 'NONFOLLOWER') {
-            nonFollower += value;
-        }
-    }
-
-    if (total <= 0) return null;
-    return clampScore((nonFollower / total) * 100);
-}
-
-function average(values) {
-    if (!values.length) return 0;
-    return values.reduce((acc, v) => acc + v, 0) / values.length;
-}
-
-function median(values) {
-    if (!values.length) return 0;
-    const sorted = [...values].sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-    return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
-function isReel(media) {
-    return media?.media_product_type === 'REELS'
-        || media?.media_type === 'REELS'
-        || media?.media_type === 'VIDEO';
-}
-
 function scoreBand(overall) {
+    if (overall == null) {
+        return {
+            label: 'Collecting data',
+            percentile_label: 'Score pending',
+            description: 'Buzzooka is gathering enough recent Reels and Insights before publishing a mature Creator Score.',
+        };
+    }
     if (overall >= 90) {
         return {
             label: 'Exceptional creator',
@@ -235,124 +146,310 @@ function scoreBand(overall) {
     };
 }
 
-function changeLabel(current, previous, suffix = 'vs previous period') {
-    if (previous == null || previous <= 0 || current == null) return null;
-    const delta = ((current - previous) / previous) * 100;
-    const abs = Math.abs(delta).toFixed(1);
-    const arrow = delta >= 0 ? '↑' : '↓';
-    return suffix ? `${arrow} ${abs}% ${suffix}` : `${arrow} ${abs}%`;
+function splitPeriod(reels, days = 15) {
+    const now = Date.now();
+    const windowMs = days * 24 * 60 * 60 * 1000;
+    const recent = [];
+    const previous = [];
+    for (const item of reels) {
+        if (!item.timestamp) continue;
+        const age = now - new Date(item.timestamp).getTime();
+        if (age <= windowMs) recent.push(item);
+        else if (age <= windowMs * 2) previous.push(item);
+    }
+    return { recent, previous };
 }
 
-/**
- * Build the Creator Score payload used by the admin creator detail page.
- */
-function calculateCreatorScore(profile, media, engagementRate, accountInsights = []) {
-    const followers = Number(profile?.followers_count) || 0;
-    const reels = (media || []).filter(isReel);
-    const views = reels.map((m) => getMediaViews(m));
-    const reaches = reels
-        .filter((m) => hasInsight(m, ['reach']))
-        .map((m) => getInsightValue(m, ['reach']));
-    const saves = reels
-        .filter((m) => hasInsight(m, ['saved', 'saves']))
-        .map((m) => getInsightValue(m, ['saved', 'saves']));
-    const shares = reels
-        .filter((m) => hasInsight(m, ['shares']))
-        .map((m) => getInsightValue(m, ['shares']));
-    const likes = reels.map((m) => Number(m.like_count) || 0);
-    const comments = reels.map((m) => Number(m.comments_count) || 0);
+function mediaMetricList(reels, reader) {
+    return reels.map(reader).filter((v) => v != null);
+}
 
-    const hasReach = reaches.length > 0;
-    const hasSaves = saves.length > 0;
-    const hasShares = shares.length > 0;
+function buildCollectingPayload({ status, label, description, percentileLabel, profile, reels, extra = {} }) {
+    return {
+        overall: null,
+        status,
+        score_version: SCORE_VERSION,
+        rising_score: null,
+        peer_tier: getFollowerTier(profile?.followers_count).key,
+        label,
+        percentile_label: percentileLabel,
+        description,
+        badges: [],
+        breakdown: [
+            { key: 'reach', name: 'Reach Power', score: null },
+            { key: 'engagement', name: 'Engagement Quality', score: null },
+            { key: 'content', name: 'Content Performance', score: null },
+            { key: 'audience', name: 'Audience Scale', score: null },
+            { key: 'consistency', name: 'Consistency', score: null },
+        ],
+        audience: {
+            avg_reach: null,
+            avg_reach_change: null,
+            engagement_rate: null,
+            engagement_change: null,
+            avg_reel_views: null,
+            avg_reel_views_change: null,
+            non_follower_reach_pct: null,
+            non_follower_note: null,
+        },
+        engagement: {
+            like_rate: null,
+            comment_rate: null,
+            save_rate: null,
+            share_rate: null,
+            weighted_er: null,
+        },
+        consistency: {
+            title: 'Collecting data',
+            median_reel_views: null,
+            median_vs_average_pct: null,
+            median_note: null,
+            above_baseline_pct: null,
+            baseline_note: null,
+            growth_30d_pct: null,
+            growth_note: null,
+            posts_per_week: calculateAdvStats(reels)?.postsPerWeek ?? 0,
+        },
+        ...extra,
+    };
+}
+
+function calculateCreatorScore(profile, media, engagementRate, accountInsights = [], options = {}) {
+    const weights = mergeWeights(options.weights);
+    const peers = options.peerMetrics || {};
+    const followers = Number(profile?.followers_count) || 0;
+    const accountType = profile?.account_type || options.accountType;
+    const reels = (media || []).filter(isReel);
+    const usableInsights = reels.filter((item) => hasInsight(item, ['views', 'reach', 'saved', 'saves', 'shares', 'total_interactions']));
+    const series = Array.isArray(accountInsights) && accountInsights[0]?.date
+        ? accountInsights
+        : seriesByDate(accountInsights);
+
+    if (!isProfessionalAccount(accountType) && accountType) {
+        return buildCollectingPayload({
+            status: 'ineligible',
+            label: 'Profile only',
+            percentileLabel: 'Not eligible',
+            description: 'Creator Score requires an Instagram Professional account (Business or Creator) with Insights access.',
+            profile,
+            reels,
+        });
+    }
+
+    if (options.fetchError) {
+        return buildCollectingPayload({
+            status: 'error',
+            label: 'Insights sync failed',
+            percentileLabel: 'Retry required',
+            description: 'An Instagram Insights request failed. Buzzooka will not recalculate the score from incomplete data.',
+            profile,
+            reels,
+        });
+    }
+
+    if (reels.length < MIN_REELS_FOR_SCORE || usableInsights.length === 0) {
+        return buildCollectingPayload({
+            status: 'collecting',
+            label: 'Collecting data',
+            percentileLabel: 'Score pending',
+            description: `Need at least ${MIN_REELS_FOR_SCORE} recent Reels plus usable Insights before publishing a mature Creator Score.`,
+            profile,
+            reels,
+        });
+    }
+
+    const views = mediaMetricList(reels, getMediaViews);
+    const reaches = mediaMetricList(reels, (item) => getInsightValue(item, ['reach']));
+    const saves = mediaMetricList(reels, (item) => getInsightValue(item, ['saved', 'saves']));
+    const shares = mediaMetricList(reels, (item) => getInsightValue(item, ['shares']));
+    const likes = mediaMetricList(reels, (item) => {
+        const fromInsight = getInsightValue(item, ['likes']);
+        if (fromInsight != null) return fromInsight;
+        return item.like_count == null ? null : Number(item.like_count);
+    });
+    const comments = mediaMetricList(reels, (item) => {
+        const fromInsight = getInsightValue(item, ['comments']);
+        if (fromInsight != null) return fromInsight;
+        return item.comments_count == null ? null : Number(item.comments_count);
+    });
+    const interactions = mediaMetricList(reels, (item) => getInsightValue(item, ['total_interactions']));
+    const watchTimes = mediaMetricList(reels, (item) => getInsightValue(item, ['ig_reels_avg_watch_time']));
+    const totalWatchTimes = mediaMetricList(reels, (item) => getInsightValue(item, ['ig_reels_video_view_total_time']));
+    const replays = mediaMetricList(reels, (item) => getInsightValue(item, ['clips_replays_count']));
+    const skipRates = mediaMetricList(reels, (item) => getInsightValue(item, ['reels_skip_rate']));
 
     const avgViews = average(views);
-    const avgReach = hasReach ? average(reaches.filter((v) => v > 0)) || average(reaches) : avgViews;
+    const medianViews = median(views);
+    const avgReach = average(reaches);
+    const medianReach = median(reaches);
     const avgLikes = average(likes);
     const avgComments = average(comments);
     const avgSaves = average(saves);
     const avgShares = average(shares);
-    const medianViews = median(views.filter((v) => v > 0));
+    const { recent, previous } = splitPeriod(reels);
+    const recentAvgViews = average(recent.map(getMediaViews));
+    const previousAvgViews = average(previous.map(getMediaViews));
+    const recentAvgReach = average(recent.map((item) => getInsightValue(item, ['reach'])));
+    const previousAvgReach = average(previous.map((item) => getInsightValue(item, ['reach'])));
 
-    const now = Date.now();
-    const day = 24 * 60 * 60 * 1000;
-    const recentReels = reels.filter((m) => m.timestamp && now - new Date(m.timestamp).getTime() <= 15 * day);
-    const previousReels = reels.filter((m) => {
-        if (!m.timestamp) return false;
-        const age = now - new Date(m.timestamp).getTime();
-        return age > 15 * day && age <= 30 * day;
-    });
-    const recentAvgViews = average(recentReels.map((m) => getMediaViews(m)));
-    const previousAvgViews = average(previousReels.map((m) => getMediaViews(m)));
+    const totalLikes = likes.length ? likes.reduce((acc, v) => acc + v, 0) : null;
+    const totalComments = comments.length ? comments.reduce((acc, v) => acc + v, 0) : null;
+    const totalSaves = saves.length ? saves.reduce((acc, v) => acc + v, 0) : null;
+    const totalShares = shares.length ? shares.reduce((acc, v) => acc + v, 0) : null;
+    const totalReach = reaches.length ? reaches.reduce((acc, v) => acc + v, 0) : sumSeriesMetric(series, 'reach');
+    const totalViews = views.length ? views.reduce((acc, v) => acc + v, 0) : sumSeriesMetric(series, 'views');
+    const accountProfileViews = sumSeriesMetric(series, 'profile_views');
+    const accountReach = sumSeriesMetric(series, 'reach') ?? totalReach;
 
-    const denom = avgReach || avgViews || 1;
-    const likeRate = (avgLikes / denom) * 100;
-    const commentRate = (avgComments / denom) * 100;
-    const saveRate = hasSaves ? (avgSaves / denom) * 100 : null;
-    const shareRate = hasShares ? (avgShares / denom) * 100 : null;
-
-    const reachRatio = followers > 0 ? avgReach / followers : 0;
-    const reachPower = clampScore(40 + Math.min(60, reachRatio * 30));
-
-    const engagementQuality = clampScore(((engagementRate || 0) / 6) * 100);
-
-    const viralShare = views.length
-        ? views.filter((v) => v >= 10_000).length / views.length
-        : 0;
-    const contentPerformance = clampScore(
-        20 + Math.min(50, reachRatio * 25) + Math.min(30, viralShare * 100),
-    );
-
-    const audienceScale = clampScore(Math.log10(Math.max(followers, 1)) * 16.6);
-
-    const aboveBaselineCount = views.filter((v) => v >= (medianViews || avgViews) * 0.8).length;
-    const aboveBaselinePct = views.length ? (aboveBaselineCount / views.length) * 100 : 0;
-    const mean = avgViews || 1;
-    const variance = views.length
-        ? views.reduce((acc, v) => acc + (v - mean) ** 2, 0) / views.length
-        : 0;
-    const cv = Math.sqrt(variance) / mean;
-    const consistencyFromSpread = clampScore(100 - Math.min(70, cv * 55));
-    const consistency = clampScore(aboveBaselinePct * 0.65 + consistencyFromSpread * 0.35);
-
-    const overall = clampScore(
-        reachPower * 0.25
-        + engagementQuality * 0.25
-        + contentPerformance * 0.2
-        + audienceScale * 0.15
-        + consistency * 0.15,
-    );
-
-    const band = scoreBand(overall);
-
-    const newFollowers30d = sumAccountInsight(accountInsights, 'follower_count');
-    const priorFollowers = Math.max(followers - newFollowers30d, 1);
-    const growthPct = newFollowers30d > 0
-        ? (newFollowers30d / priorFollowers) * 100
+    const likeRate = rate(totalLikes, totalReach);
+    const commentRate = rate(totalComments, totalReach);
+    const saveRate = rate(totalSaves, totalReach);
+    const shareRate = rate(totalShares, totalReach);
+    const weightedParts = [
+        [totalLikes, weights.like],
+        [totalComments, weights.comment],
+        [totalSaves, weights.save],
+        [totalShares, weights.share],
+    ];
+    const weightedInteractions = weightedParts.some(([value]) => value != null)
+        ? weightedParts.reduce((acc, [value, weight]) => (value == null ? acc : acc + value * weight), 0)
         : null;
+    const weightedEr = rate(weightedInteractions, totalReach);
+    const totalInteractionsValue = interactions.length
+        ? interactions.reduce((acc, v) => acc + v, 0)
+        : [totalLikes, totalComments, totalSaves, totalShares].every((v) => v != null)
+            ? totalLikes + totalComments + totalSaves + totalShares
+            : null;
+    const engagementRateValue = rate(totalInteractionsValue, totalReach) ?? (engagementRate || null);
 
-    const nonFollowerPct = getNonFollowerReachPct(accountInsights);
+    const profileVisitRate = rate(accountProfileViews, accountReach);
+    const nonFollowerPct = options.nonFollowerReachPct ?? getNonFollowerReachPct(accountInsights);
+    const followerGrowthPct = options.followerGrowthPct ?? (() => {
+        const newFollowers = sumSeriesMetric(series, 'follows') ?? sumSeriesMetric(series, 'follower_count');
+        if (newFollowers == null || followers <= 0) return null;
+        const prior = Math.max(followers - newFollowers, 1);
+        return (newFollowers / prior) * 100;
+    })();
 
+    const blendedViews = blendOutliers(views, weights.content_performance.outlier_blend);
+    const reelPerformance = followers > 0 && blendedViews != null ? blendedViews / followers : null;
+    const avgWatchTime = average(watchTimes) ?? (
+        totalWatchTimes.length && totalViews
+            ? totalWatchTimes.reduce((acc, v) => acc + v, 0) / totalViews
+            : null
+    );
+    const reelEngagement = rate(totalInteractionsValue, totalReach);
+    const storyEngagement = options.storyEngagement ?? null;
+
+    const medianVsAvg = rate(medianViews, avgViews, false);
+    const aboveBaselineCount = views.filter((v) => v >= (medianViews ?? avgViews ?? 0)).length;
+    const aboveBaselinePct = views.length ? (aboveBaselineCount / views.length) * 100 : null;
+    const cv = avgViews ? (stdev(views) ?? 0) / avgViews : null;
+    const stabilityScore = cv == null ? null : clampScore(100 / (1 + cv));
+
+    const reachPowerScore = clampScore(weightedAverage([
+        {
+            score: metricScore(medianReach, peers.median_reach, logisticScore((medianReach || 0) / Math.max(followers, 1), 0.8, 0.5)),
+            weight: nonFollowerPct == null ? weights.reach_power.without_non_follower.median_reach : weights.reach_power.median_reach,
+        },
+        {
+            score: metricScore(avgViews, peers.avg_reel_views, logisticScore((avgViews || 0) / Math.max(followers, 1), 0.6, 0.4)),
+            weight: nonFollowerPct == null ? weights.reach_power.without_non_follower.avg_reel_views : weights.reach_power.avg_reel_views,
+        },
+        {
+            score: metricScore(profileVisitRate, peers.profile_visit_rate, logisticScore(profileVisitRate, 8, 6)),
+            weight: nonFollowerPct == null ? weights.reach_power.without_non_follower.profile_visit_rate : weights.reach_power.profile_visit_rate,
+        },
+        {
+            score: metricScore(nonFollowerPct, peers.non_follower_reach_pct, logisticScore(nonFollowerPct, 45, 20)),
+            weight: nonFollowerPct == null ? 0 : weights.reach_power.non_follower_reach,
+        },
+    ]));
+
+    const engagementQualityScore = clampScore(weightedAverage([
+        { score: metricScore(weightedEr, peers.weighted_er, logisticScore(weightedEr, 4, 3)), weight: weights.engagement_quality.weighted_er },
+        { score: metricScore(saveRate, peers.save_rate, logisticScore(saveRate, 1.5, 1.2)), weight: weights.engagement_quality.save_rate },
+        { score: metricScore(shareRate, peers.share_rate, logisticScore(shareRate, 0.4, 0.4)), weight: weights.engagement_quality.share_rate },
+        { score: metricScore(commentRate, peers.comment_rate, logisticScore(commentRate, 0.3, 0.3)), weight: weights.engagement_quality.comment_rate },
+        { score: metricScore(likeRate, peers.like_rate, logisticScore(likeRate, 4, 3)), weight: weights.engagement_quality.like_rate },
+    ]));
+
+    const contentPerformanceScore = clampScore(weightedAverage([
+        { score: metricScore(reelPerformance, peers.reel_performance, logisticScore(reelPerformance, 0.5, 0.4)), weight: weights.content_performance.reel_performance },
+        { score: metricScore(avgWatchTime, peers.avg_watch_time, logisticScore(avgWatchTime, 8, 6)), weight: weights.content_performance.watch_time },
+        { score: metricScore(reelEngagement, peers.reel_engagement, logisticScore(reelEngagement, 5, 4)), weight: weights.content_performance.reel_engagement },
+        { score: metricScore(storyEngagement, peers.story_engagement, logisticScore(storyEngagement, 4, 3)), weight: weights.content_performance.story_performance },
+    ]));
+
+    const followerLogScore = clampScore(Math.log10(Math.max(followers, 1)) * 16.6);
+    const audienceScaleScore = clampScore(weightedAverage([
+        { score: metricScore(followerLogScore, peers.follower_score, followerLogScore), weight: weights.audience_scale.follower_score },
+        { score: metricScore(followerGrowthPct, peers.follower_growth_pct, logisticScore(followerGrowthPct, 5, 8)), weight: weights.audience_scale.follower_growth },
+        { score: metricScore(nonFollowerPct, peers.audience_quality, logisticScore(nonFollowerPct, 45, 20)), weight: weights.audience_scale.audience_quality },
+    ]));
+
+    const medianVsAvgScore = medianVsAvg == null ? null : clampScore(medianVsAvg * 100);
+    const consistencyScore = clampScore(weightedAverage([
+        { score: metricScore(medianVsAvgScore, peers.median_vs_average, medianVsAvgScore), weight: weights.consistency.median_vs_average },
+        { score: metricScore(aboveBaselinePct, peers.above_baseline_pct, aboveBaselinePct), weight: weights.consistency.above_baseline },
+        { score: metricScore(stabilityScore, peers.stability, stabilityScore), weight: weights.consistency.stability },
+    ]));
+
+    const overall = clampScore(weightedAverage([
+        { score: reachPowerScore, weight: weights.categories.reach_power },
+        { score: engagementQualityScore, weight: weights.categories.engagement_quality },
+        { score: contentPerformanceScore, weight: weights.categories.content_performance },
+        { score: audienceScaleScore, weight: weights.categories.audience_scale },
+        { score: consistencyScore, weight: weights.categories.consistency },
+    ]));
+
+    const viewGrowth = growthRate(recentAvgViews, previousAvgViews);
+    const reachGrowth = growthRate(recentAvgReach, previousAvgReach);
+    const periodEr = (items) => {
+        const interactions = items.map((item) => {
+            const fromInsight = getInsightValue(item, ['total_interactions']);
+            if (fromInsight != null) return fromInsight;
+            if (item.like_count == null && item.comments_count == null) return null;
+            return (item.like_count || 0) + (item.comments_count || 0);
+        });
+        const reachValues = items.map((item) => getInsightValue(item, ['reach']));
+        const interactionSum = interactions.every((v) => v == null) ? null : interactions.reduce((acc, v) => acc + (v || 0), 0);
+        const reachSum = reachValues.every((v) => v == null) ? null : reachValues.reduce((acc, v) => acc + (v || 0), 0);
+        return rate(interactionSum, reachSum);
+    };
+    const recentEr = periodEr(recent);
+    const previousEr = periodEr(previous);
+    const engagementGrowth = growthRate(recentEr, previousEr);
+
+    const risingScore = clampScore(weightedAverage([
+        { score: metricScore(followerGrowthPct, peers.follower_growth_pct, logisticScore(followerGrowthPct, 8, 8)), weight: weights.rising.follower_growth },
+        { score: metricScore(reachGrowth, peers.reach_growth, logisticScore(reachGrowth, 10, 12)), weight: weights.rising.reach_growth },
+        { score: metricScore(viewGrowth, peers.view_growth, logisticScore(viewGrowth, 10, 12)), weight: weights.rising.view_growth },
+        { score: metricScore(engagementGrowth, peers.engagement_growth, logisticScore(engagementGrowth, 8, 10)), weight: weights.rising.engagement_growth },
+        { score: consistencyScore, weight: weights.rising.consistency },
+    ]));
+
+    const peerCount = Math.max(
+        ...(Object.values(peers).map((list) => (Array.isArray(list) ? list.length : 0))),
+        0,
+    );
+    const status = peerCount >= 5 ? 'ready' : 'provisional';
+    const band = scoreBand(overall);
     const adv = calculateAdvStats(reels);
     const postsPerWeek = adv?.postsPerWeek ?? 0;
 
     const badges = [];
-    if ((growthPct != null && growthPct >= 8) || postsPerWeek >= 4) {
+    if ((followerGrowthPct != null && followerGrowthPct >= 8) || postsPerWeek >= 4) {
         badges.push({ key: 'growth', label: '↑ Fast Growing', tone: 'green' });
     }
-    if (reachRatio >= 1.2 || views.some((v) => v >= 100_000)) {
+    if ((avgReach != null && followers > 0 && avgReach / followers >= 1.2) || views.some((v) => v >= 100_000)) {
         badges.push({ key: 'video', label: '◎ Strong Video', tone: 'blue' });
     }
-    if ((engagementRate || 0) >= 3.5) {
+    if ((engagementRateValue || 0) >= 3.5 || (weightedEr || 0) >= 8) {
         badges.push({ key: 'engaged', label: '✦ Highly Engaged', tone: 'yellow' });
     }
 
-    const medianVsAvg = avgViews > 0 ? Math.round((medianViews / avgViews) * 100) : null;
-
-    const categoryER = 3.5;
-    const erDelta = (engagementRate || 0) - categoryER;
-    const engagementChange = `${erDelta >= 0 ? '↑' : '↓'} ${Math.abs(erDelta).toFixed(1)}% vs category`;
-
+    const medianVsAvgPct = medianVsAvg == null ? null : Math.round(medianVsAvg * 100);
     const nonFollowerNote = nonFollowerPct == null
         ? null
         : nonFollowerPct >= 60
@@ -360,53 +457,87 @@ function calculateCreatorScore(profile, media, engagementRate, accountInsights =
             : nonFollowerPct >= 40
                 ? 'Strong discovery'
                 : 'Building discovery';
-
-    const consistencyTitle = aboveBaselinePct >= 70 ? 'Reliable performance' : 'Variable performance';
-    const baselineNote = aboveBaselinePct >= 70 ? 'Very consistent' : 'Needs more consistency';
-    const growthNote = growthPct == null
+    const consistencyTitle = (aboveBaselinePct || 0) >= 70 ? 'Reliable performance' : 'Variable performance';
+    const baselineNote = aboveBaselinePct == null ? null : aboveBaselinePct >= 70 ? 'Very consistent' : 'Needs more consistency';
+    const growthNote = followerGrowthPct == null
         ? null
-        : growthPct >= 10
+        : followerGrowthPct >= 10
             ? 'Faster than category'
             : 'Steady growth';
-    const medianNote = medianVsAvg == null ? null : `${medianVsAvg}% of average views`;
+
+    const categoryER = 3.5;
+    const erDelta = engagementRateValue == null ? null : engagementRateValue - categoryER;
 
     return {
         overall,
+        status,
+        score_version: SCORE_VERSION,
+        rising_score: risingScore,
+        peer_tier: getFollowerTier(followers).key,
+        peer_count: peerCount,
         ...band,
         badges,
         breakdown: [
-            { key: 'reach', name: 'Reach Power', score: reachPower },
-            { key: 'engagement', name: 'Engagement Quality', score: engagementQuality },
-            { key: 'content', name: 'Content Performance', score: contentPerformance },
-            { key: 'audience', name: 'Audience Scale', score: audienceScale },
-            { key: 'consistency', name: 'Consistency', score: consistency },
+            { key: 'reach', name: 'Reach Power', score: reachPowerScore },
+            { key: 'engagement', name: 'Engagement Quality', score: engagementQualityScore },
+            { key: 'content', name: 'Content Performance', score: contentPerformanceScore },
+            { key: 'audience', name: 'Audience Scale', score: audienceScaleScore },
+            { key: 'consistency', name: 'Consistency', score: consistencyScore },
         ],
         audience: {
-            avg_reach: Math.round(avgReach),
-            avg_reach_change: changeLabel(recentAvgViews, previousAvgViews),
-            engagement_rate: parseFloat((engagementRate || 0).toFixed(2)),
-            engagement_change: engagementChange,
-            avg_reel_views: Math.round(avgViews),
+            avg_reach: avgReach == null ? null : Math.round(avgReach),
+            avg_reach_change: changeLabel(recentAvgReach, previousAvgReach),
+            engagement_rate: engagementRateValue == null ? null : parseFloat(engagementRateValue.toFixed(2)),
+            engagement_change: erDelta == null ? null : `${erDelta >= 0 ? '↑' : '↓'} ${Math.abs(erDelta).toFixed(1)}% vs category`,
+            avg_reel_views: avgViews == null ? null : Math.round(avgViews),
             avg_reel_views_change: changeLabel(recentAvgViews, previousAvgViews, ''),
-            non_follower_reach_pct: nonFollowerPct,
+            non_follower_reach_pct: nonFollowerPct == null ? null : clampScore(nonFollowerPct),
             non_follower_note: nonFollowerNote,
         },
         engagement: {
-            like_rate: parseFloat(likeRate.toFixed(2)),
-            comment_rate: parseFloat(commentRate.toFixed(2)),
+            like_rate: likeRate == null ? null : parseFloat(likeRate.toFixed(2)),
+            comment_rate: commentRate == null ? null : parseFloat(commentRate.toFixed(2)),
             save_rate: saveRate == null ? null : parseFloat(saveRate.toFixed(2)),
             share_rate: shareRate == null ? null : parseFloat(shareRate.toFixed(2)),
+            weighted_er: weightedEr == null ? null : parseFloat(weightedEr.toFixed(2)),
         },
         consistency: {
             title: consistencyTitle,
-            median_reel_views: Math.round(medianViews),
-            median_vs_average_pct: medianVsAvg,
-            median_note: medianNote,
-            above_baseline_pct: Math.round(aboveBaselinePct),
+            median_reel_views: medianViews == null ? null : Math.round(medianViews),
+            median_vs_average_pct: medianVsAvgPct,
+            median_note: medianVsAvgPct == null ? null : `${medianVsAvgPct}% of average views`,
+            above_baseline_pct: aboveBaselinePct == null ? null : Math.round(aboveBaselinePct),
             baseline_note: baselineNote,
-            growth_30d_pct: growthPct == null ? null : parseFloat(growthPct.toFixed(1)),
+            growth_30d_pct: followerGrowthPct == null ? null : parseFloat(followerGrowthPct.toFixed(1)),
             growth_note: growthNote,
             posts_per_week: postsPerWeek,
+        },
+        metrics: {
+            median_reach: medianReach,
+            avg_reel_views: avgViews,
+            profile_visit_rate: profileVisitRate,
+            non_follower_reach_pct: nonFollowerPct,
+            weighted_er: weightedEr,
+            save_rate: saveRate,
+            share_rate: shareRate,
+            comment_rate: commentRate,
+            like_rate: likeRate,
+            reel_performance: reelPerformance,
+            avg_watch_time: avgWatchTime,
+            reel_engagement: reelEngagement,
+            story_engagement: storyEngagement,
+            follower_score: followerLogScore,
+            follower_growth_pct: followerGrowthPct,
+            audience_quality: nonFollowerPct,
+            median_vs_average: medianVsAvgScore,
+            above_baseline_pct: aboveBaselinePct,
+            stability: stabilityScore,
+            reach_growth: reachGrowth,
+            view_growth: viewGrowth,
+            engagement_growth: engagementGrowth,
+            replays: average(replays),
+            skip_rate: average(skipRates),
+            followers,
         },
     };
 }
@@ -421,4 +552,6 @@ module.exports = {
     getInsightValue,
     getViewBucket,
     computeReelsStats,
+    SCORE_VERSION,
+    DEFAULT_WEIGHTS,
 };

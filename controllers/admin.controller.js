@@ -146,10 +146,11 @@ exports.getCreators = async (request, reply) => {
             {
                 model: social_accounts,
                 as: 'social_accounts',
-                attributes: [
-                    'id', 'platform', 'username', 'display_name', 'profile_image',
-                    'followers_count', 'engagement_rate', 'is_connected', 'last_synced_at',
-                ],
+                    attributes: [
+                        'id', 'platform', 'username', 'display_name', 'profile_image',
+                        'followers_count', 'engagement_rate', 'is_connected', 'last_synced_at',
+                        'account_type', 'score_status',
+                    ],
                 required: connected === 'connected',
                 where: connected === 'connected'
                     ? { platform: 'instagram', is_connected: true }
@@ -414,6 +415,7 @@ exports.getCreatorById = async (request, reply) => {
                         'id', 'platform', 'username', 'display_name', 'profile_image',
                         'followers_count', 'following_count', 'engagement_rate', 'total_posts',
                         'total_views', 'is_connected', 'last_synced_at', 'status',
+                        'biography', 'account_type', 'score_status', 'connected_at',
                     ],
                 },
                 {
@@ -644,7 +646,9 @@ exports.getCreatorInsights = async (request, reply) => {
             });
         }
 
-        const insights = await syncAccountInsights(account);
+        const insights = await syncAccountInsights(account, {
+            force: request.query?.force === '1' || request.query?.force === 'true',
+        });
 
         reply.send({
             success: true,

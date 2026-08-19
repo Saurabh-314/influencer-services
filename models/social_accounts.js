@@ -1,5 +1,6 @@
 'use strict';
 const { Model } = require('sequelize');
+const { encryptToken, decryptToken } = require('../utils/tokenCrypto');
 
 module.exports = (sequelize, DataTypes) => {
     class social_accounts extends Model {
@@ -12,6 +13,29 @@ module.exports = (sequelize, DataTypes) => {
                 foreignKey: 'social_account_id',
                 as: 'submissions',
             });
+            social_accounts.hasMany(models.creator_media, {
+                foreignKey: 'social_account_id',
+                as: 'media',
+            });
+            social_accounts.hasMany(models.creator_account_insights, {
+                foreignKey: 'social_account_id',
+                as: 'account_insights',
+            });
+            social_accounts.hasMany(models.creator_media_insights, {
+                foreignKey: 'social_account_id',
+                as: 'media_insights',
+            });
+            social_accounts.hasMany(models.creator_scores, {
+                foreignKey: 'social_account_id',
+                as: 'scores',
+            });
+        }
+
+        toJSON() {
+            const values = { ...this.get() };
+            delete values.access_token;
+            delete values.refresh_token;
+            return values;
         }
     }
 
@@ -30,17 +54,39 @@ module.exports = (sequelize, DataTypes) => {
         username: { type: DataTypes.STRING, allowNull: false },
         display_name: { type: DataTypes.STRING, allowNull: true },
         profile_image: { type: DataTypes.STRING, allowNull: true },
+        biography: { type: DataTypes.TEXT, allowNull: true },
+        account_type: { type: DataTypes.STRING, allowNull: true },
         followers_count: { type: DataTypes.INTEGER, defaultValue: 0 },
         following_count: { type: DataTypes.INTEGER, defaultValue: 0 },
         subscribers_count: { type: DataTypes.INTEGER, defaultValue: 0 },
         engagement_rate: { type: DataTypes.FLOAT, defaultValue: 0 },
         total_posts: { type: DataTypes.INTEGER, defaultValue: 0 },
         total_views: { type: DataTypes.BIGINT, defaultValue: 0 },
-        access_token: { type: DataTypes.TEXT, allowNull: true },
-        refresh_token: { type: DataTypes.TEXT, allowNull: true },
+        access_token: {
+            type: DataTypes.TEXT,
+            allowNull: true,
+            get() {
+                return decryptToken(this.getDataValue('access_token'));
+            },
+            set(value) {
+                this.setDataValue('access_token', encryptToken(value));
+            },
+        },
+        refresh_token: {
+            type: DataTypes.TEXT,
+            allowNull: true,
+            get() {
+                return decryptToken(this.getDataValue('refresh_token'));
+            },
+            set(value) {
+                this.setDataValue('refresh_token', encryptToken(value));
+            },
+        },
         token_expiry: { type: DataTypes.DATE, allowNull: true },
         is_connected: { type: DataTypes.BOOLEAN, defaultValue: true },
+        connected_at: { type: DataTypes.DATE, allowNull: true },
         last_synced_at: { type: DataTypes.DATE, allowNull: true },
+        score_status: { type: DataTypes.STRING, allowNull: true },
         status: {
             type: DataTypes.ENUM('active', 'inactive', 'error'),
             defaultValue: 'active',

@@ -29,6 +29,14 @@ module.exports = (sequelize, DataTypes) => {
                 foreignKey: 'user_id',
                 as: 'wallet',
             });
+            users.hasMany(models.creator_media, {
+                foreignKey: 'user_id',
+                as: 'creator_media',
+            });
+            users.hasMany(models.creator_scores, {
+                foreignKey: 'user_id',
+                as: 'creator_scores',
+            });
         }
 
         async comparePassword(password) {

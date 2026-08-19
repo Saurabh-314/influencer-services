@@ -2,6 +2,30 @@ const axios = require('axios');
 
 const MEDIA_FIELDS = 'id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count';
 const API_VERSION = 'v21.0';
+const { MEDIA_LOOKBACK_DAYS, ACCOUNT_INSIGHT_DAYS } = require('../utils/scoringConfig');
+
+const ACCOUNT_INSIGHT_METRICS = [
+    'reach',
+    'views',
+    'profile_views',
+    'total_interactions',
+    'likes',
+    'comments',
+    'shares',
+    'saves',
+    'follower_count',
+    'follows_and_unfollows',
+    'impressions',
+];
+
+const REEL_INSIGHT_METRIC_GROUPS = [
+    'views,reach,saved,shares,likes,comments,total_interactions,ig_reels_avg_watch_time,ig_reels_video_view_total_time,clips_replays_count,reels_skip_rate',
+    'views,reach,saved,shares,likes,comments,total_interactions,ig_reels_avg_watch_time,ig_reels_video_view_total_time',
+    'views,reach,saved,shares,likes,comments,total_interactions',
+    'views,reach,saved,shares',
+    'views,reach',
+    'views',
+];
 
 // Instagram API with Instagram Login (Business Login for Instagram).
 // Docs: https://developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/business-login/
@@ -371,36 +395,84 @@ class InstagramService {
         return null;
     }
 
+    isUnsupportedMetricError(error) {
+        const meta = sanitizeMetaError(error);
+        const message = String(meta.message || '').toLowerCase();
+        return message.includes('invalid metric')
+            || message.includes('does not support metric')
+            || message.includes('unsupported metric')
+            || (message.includes('metric') && message.includes('not available'));
+    }
+
+    isFatalInsightsError(error) {
+        const meta = sanitizeMetaError(error);
+        if (this.isUnsupportedMetricError(error)) return false;
+        return [4, 17, 32, 100, 190, 803, 80004].includes(meta.code);
+    }
+
     async getAccountInsights(igAccountId, accessToken) {
         const until = Math.floor(Date.now() / 1000);
-        const since = until - 30 * 24 * 60 * 60;
-        const seriesAttempts = ['reach,follower_count', 'reach'];
+        const since = until - ACCOUNT_INSIGHT_DAYS * 24 * 60 * 60;
+        const collected = [];
+        let anySuccess = false;
+        let fatalError = false;
 
-        const seriesPromise = (async () => {
-            for (const metric of seriesAttempts) {
+        try {
+            const batch = await this.fetchAccountInsights(igAccountId, accessToken, {
+                metric: ACCOUNT_INSIGHT_METRICS.join(','),
+                period: 'day',
+                since,
+                until,
+            });
+            collected.push(...batch);
+            anySuccess = true;
+        } catch (error) {
+            if (this.isFatalInsightsError(error) && !this.isUnsupportedMetricError(error)) {
+                fatalError = true;
+            }
+            for (const metric of ACCOUNT_INSIGHT_METRICS) {
                 try {
-                    return await this.fetchAccountInsights(igAccountId, accessToken, {
+                    const data = await this.fetchAccountInsights(igAccountId, accessToken, {
                         metric,
                         period: 'day',
                         since,
                         until,
                     });
-                } catch (error) {
+                    collected.push(...data);
+                    anySuccess = true;
+                } catch (metricError) {
+                    if (this.isUnsupportedMetricError(metricError)) {
+                        continue;
+                    }
                     console.warn(
                         `Could not fetch account insights (${metric}):`,
-                        error.response?.data || error.message,
+                        metricError.response?.data || metricError.message,
                     );
+                    if (this.isFatalInsightsError(metricError)) {
+                        fatalError = true;
+                    }
                 }
             }
-            return [];
-        })();
+        }
 
-        const [series, followBreakdown] = await Promise.all([
-            seriesPromise,
-            this.getReachFollowBreakdown(igAccountId, accessToken, since, until),
-        ]);
+        const followBreakdown = await this.getReachFollowBreakdown(igAccountId, accessToken, since, until);
+        if (followBreakdown) collected.push(followBreakdown);
 
-        return followBreakdown ? [...series, followBreakdown] : series;
+        return {
+            data: collected,
+            error: fatalError && !anySuccess,
+            since,
+            until,
+        };
+    }
+
+    isOlderThanLookback(item) {
+        if (!item?.timestamp) return false;
+        return Date.now() - new Date(item.timestamp).getTime() > MEDIA_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
+    }
+
+    withinLookback(item) {
+        return !this.isOlderThanLookback(item);
     }
 
     async getAllReels(igAccountId, accessToken) {
@@ -420,19 +492,20 @@ class InstagramService {
                     : {},
             });
 
-
-            const pageReels = (res.data.data || []).filter(
-                (item) => item.media_product_type === 'REELS',
+            const pageItems = res.data.data || [];
+            const pageReels = pageItems.filter(
+                (item) => item.media_product_type === 'REELS' && this.withinLookback(item),
             );
             reels.push(...pageReels);
 
-            url = res.data.paging?.next || null;
+            const reachedLookback = pageItems.some((item) => this.isOlderThanLookback(item));
+            url = reachedLookback ? null : (res.data.paging?.next || null);
         }
 
         return reels;
     }
 
-    async getReelsWithInsights(igAccountId, accessToken, metrics = 'views,reach,saved,shares') {
+    async getReelsWithInsights(igAccountId, accessToken, metrics = REEL_INSIGHT_METRIC_GROUPS[3]) {
         let url = `${this.baseUrl}/${igAccountId}/media`;
         const reels = [];
 
@@ -441,8 +514,6 @@ class InstagramService {
             const res = await axios.get(url, {
                 params: isFirstPage
                     ? {
-                        // Field expansion pulls insights inline, avoiding an
-                        // extra insights request per reel (N+1).
                         fields: `${MEDIA_FIELDS},insights.metric(${metrics})`,
                         media_type: 'VIDEO',
                         limit: 100,
@@ -451,24 +522,24 @@ class InstagramService {
                     : {},
             });
 
-            const pageReels = (res.data.data || [])
-                .filter((item) => item.media_product_type === 'REELS')
+            const pageItems = res.data.data || [];
+            const pageReels = pageItems
+                .filter((item) => item.media_product_type === 'REELS' && this.withinLookback(item))
                 .map((item) => ({
                     ...item,
                     insights: normalizeMediaInsights(item.insights),
                 }));
             reels.push(...pageReels);
 
-            url = res.data.paging?.next || null;
+            const reachedLookback = pageItems.some((item) => this.isOlderThanLookback(item));
+            url = reachedLookback ? null : (res.data.paging?.next || null);
         }
 
         return reels;
     }
 
     async getReelInsights(mediaId, accessToken) {
-        const metricAttempts = ['views,reach,saved,shares', 'views'];
-
-        for (const metric of metricAttempts) {
+        for (const metric of REEL_INSIGHT_METRIC_GROUPS) {
             try {
                 const insightRes = await axios.get(`${this.baseUrl}/${mediaId}/insights`, {
                     params: {
@@ -476,46 +547,64 @@ class InstagramService {
                         access_token: accessToken,
                     },
                 });
-                return insightRes.data.data || [];
+                return { data: insightRes.data.data || [], error: false };
             } catch (err) {
+                if (this.isUnsupportedMetricError(err)) continue;
                 console.warn(
                     `Insights error for ${mediaId} (${metric}):`,
                     err.response?.data || err.message,
                 );
+                if (this.isFatalInsightsError(err)) {
+                    return { data: [], error: true };
+                }
             }
         }
 
-        return [];
+        return { data: [], error: false };
     }
 
     async attachReelInsights(reels, accessToken, concurrency = 5) {
-        return mapWithConcurrency(reels, async (item) => {
-            const insights = await this.getReelInsights(item.id, accessToken);
-            return { ...item, insights };
+        let error = false;
+        const items = await mapWithConcurrency(reels, async (item) => {
+            const result = await this.getReelInsights(item.id, accessToken);
+            if (result.error) error = true;
+            return { ...item, insights: result.data };
         }, concurrency);
+        return { media: items, error };
     }
 
     async getMedia(igAccountId, accessToken) {
-        const metricAttempts = ['views,reach,saved,shares', 'views'];
+        const result = await this.getMediaWithStatus(igAccountId, accessToken);
+        if (result.error && !result.media.length) {
+            throw new Error('Failed to fetch Instagram media insights');
+        }
+        return result.media;
+    }
 
-        for (const metrics of metricAttempts) {
+    async getMediaWithStatus(igAccountId, accessToken) {
+        for (const metrics of REEL_INSIGHT_METRIC_GROUPS) {
             try {
-                return await this.getReelsWithInsights(igAccountId, accessToken, metrics);
+                const media = await this.getReelsWithInsights(igAccountId, accessToken, metrics);
+                return { media, error: false };
             } catch (err) {
+                if (this.isUnsupportedMetricError(err)) continue;
                 console.warn(
                     `getMedia with metrics ${metrics} failed:`,
                     err.response?.data || err.message,
                 );
+                if (this.isFatalInsightsError(err)) {
+                    return { media: [], error: true };
+                }
             }
         }
 
         try {
             const reels = await this.getAllReels(igAccountId, accessToken);
-            if (!reels.length) return [];
+            if (!reels.length) return { media: [], error: false };
             return this.attachReelInsights(reels, accessToken);
         } catch (err) {
             console.error(err.response?.data || err.message);
-            throw err;
+            return { media: [], error: true };
         }
     }
 }
