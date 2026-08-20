@@ -6,6 +6,10 @@ async function adminRoutes(fastify) {
         preHandler: [authenticateUser, authorizeRoles('admin')],
     }, adminController.getCreators);
 
+    fastify.get('/creators/compare', {
+        preHandler: [authenticateUser, authorizeRoles('admin')],
+    }, adminController.compareCreators);
+
     fastify.get('/brands', {
         preHandler: [authenticateUser, authorizeRoles('admin')],
     }, adminController.getBrands);

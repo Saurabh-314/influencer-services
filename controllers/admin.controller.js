@@ -8,6 +8,7 @@ const wallets = db.models.wallets;
 const wallet_transactions = db.models.wallet_transactions;
 const campaigns = db.models.campaigns;
 const campaign_submissions = db.models.campaign_submissions;
+const creator_scores = db.models.creator_scores;
 const { sequelize } = db;
 const { getWalletSummary } = require('../services/wallet.service');
 const { syncAccountInsights } = require('../services/instagramInsights.service');
@@ -96,15 +97,38 @@ function parsePagination(query) {
     return { pageNum, limitNum, offset: (pageNum - 1) * limitNum };
 }
 
-function buildSearchWhere(search) {
+function buildSearchWhere(search, { includeInstagramUsername = false } = {}) {
     if (!search || !search.trim()) return {};
     const term = `%${search.trim()}%`;
-    return {
-        [Op.or]: [
-            { name: { [Op.like]: term } },
-            { email: { [Op.like]: term } },
-        ],
-    };
+    const or = [
+        { name: { [Op.like]: term } },
+        { email: { [Op.like]: term } },
+    ];
+    if (includeInstagramUsername) {
+        or.push(sequelize.literal(`EXISTS (
+            SELECT 1 FROM social_accounts sa
+            WHERE sa.user_id = users.id
+            AND sa.platform = 'instagram'
+            AND sa.deleted_at IS NULL
+            AND sa.username LIKE ${sequelize.escape(term)}
+        )`));
+    }
+    return { [Op.or]: or };
+}
+
+function parseCompareIds(query) {
+    const raw = query?.ids;
+    const values = Array.isArray(raw) ? raw : String(raw || '').split(',');
+    const ids = [];
+    const seen = new Set();
+    for (const value of values) {
+        const id = parseInt(value, 10);
+        if (!Number.isInteger(id) || id <= 0 || seen.has(id)) continue;
+        seen.add(id);
+        ids.push(id);
+        if (ids.length >= 4) break;
+    }
+    return ids;
 }
 
 exports.getCreators = async (request, reply) => {
@@ -114,7 +138,7 @@ exports.getCreators = async (request, reply) => {
 
         const where = {
             role: 'creator',
-            ...buildSearchWhere(search),
+            ...buildSearchWhere(search, { includeInstagramUsername: true }),
         };
 
         if (status === 'active' || status === 'inactive') {
@@ -392,6 +416,127 @@ exports.getBrands = async (request, reply) => {
                 },
             },
         });
+    } catch (error) {
+        reply.status(500).send({ success: false, message: error.message });
+    }
+};
+
+exports.compareCreators = async (request, reply) => {
+    try {
+        const ids = parseCompareIds(request.query);
+        if (!ids.length) {
+            return reply.status(400).send({
+                success: false,
+                message: 'Provide 1–4 creator ids via ids query param',
+            });
+        }
+
+        const rows = await users.findAll({
+            where: { id: { [Op.in]: ids }, role: 'creator' },
+            attributes: [
+                'id', 'name', 'email', 'profile_image', 'status', 'createdAt',
+                [
+                    sequelize.literal(`(
+                        SELECT COALESCE(SUM(points), 0)
+                        FROM creator_points
+                        WHERE creator_points.user_id = users.id
+                    )`),
+                    'total_points',
+                ],
+                [
+                    sequelize.literal(`(
+                        SELECT COUNT(*)
+                        FROM campaign_submissions
+                        WHERE campaign_submissions.user_id = users.id
+                    )`),
+                    'submissions_total',
+                ],
+                [
+                    sequelize.literal(`(
+                        SELECT COUNT(*)
+                        FROM campaign_submissions
+                        WHERE campaign_submissions.user_id = users.id
+                        AND campaign_submissions.status = 'approved'
+                    )`),
+                    'submissions_approved',
+                ],
+            ],
+            include: [
+                {
+                    model: social_accounts,
+                    as: 'social_accounts',
+                    attributes: [
+                        'id', 'platform', 'username', 'display_name', 'profile_image',
+                        'followers_count', 'following_count', 'engagement_rate', 'total_posts',
+                        'biography', 'account_type', 'score_status', 'is_connected', 'last_synced_at',
+                    ],
+                    required: false,
+                },
+                {
+                    model: creator_ranks,
+                    as: 'rank',
+                    attributes: ['level', 'rank_score', 'rank_name'],
+                    required: false,
+                },
+            ],
+        });
+
+        const byId = new Map(rows.map((row) => [row.id, row]));
+        const ordered = ids.map((id) => byId.get(id)).filter(Boolean);
+
+        if (!ordered.length) {
+            return reply.status(404).send({ success: false, message: 'No matching creators found' });
+        }
+
+        const instagramAccounts = ordered
+            .map((row) => {
+                const plain = row.toJSON();
+                return (plain.social_accounts || []).find(
+                    (account) => account.platform === 'instagram' && account.is_connected,
+                );
+            })
+            .filter(Boolean);
+
+        const scoreRows = instagramAccounts.length
+            ? await creator_scores.findAll({
+                where: { social_account_id: { [Op.in]: instagramAccounts.map((account) => account.id) } },
+                order: [['calculated_at', 'DESC']],
+            })
+            : [];
+
+        const latestScoreByAccount = {};
+        for (const score of scoreRows) {
+            if (latestScoreByAccount[score.social_account_id] == null) {
+                latestScoreByAccount[score.social_account_id] = score;
+            }
+        }
+
+        const profiles = ordered.map((row) => {
+            const plain = row.toJSON();
+            const instagram = (plain.social_accounts || []).find(
+                (account) => account.platform === 'instagram' && account.is_connected,
+            );
+            const latestScore = instagram ? latestScoreByAccount[instagram.id] : null;
+            const payload = latestScore?.payload_json || null;
+
+            return {
+                id: plain.id,
+                name: plain.name,
+                email: plain.email,
+                profile_image: plain.profile_image,
+                status: plain.status,
+                createdAt: plain.createdAt,
+                total_points: parseInt(plain.total_points, 10) || 0,
+                submissions_total: parseInt(plain.submissions_total, 10) || 0,
+                submissions_approved: parseInt(plain.submissions_approved, 10) || 0,
+                instagram: instagram || null,
+                rank: plain.rank || null,
+                creator_score: payload,
+                score_calculated_at: latestScore?.calculated_at || null,
+            };
+        });
+
+        reply.send({ success: true, data: profiles });
     } catch (error) {
         reply.status(500).send({ success: false, message: error.message });
     }

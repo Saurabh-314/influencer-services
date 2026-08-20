@@ -437,6 +437,7 @@ class InstagramService {
                 since,
                 until,
             });
+            console.log('batch', batch);
             collected.push(...batch);
         } catch (error) {
             const meta = sanitizeMetaError(error);
